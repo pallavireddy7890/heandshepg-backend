@@ -1,0 +1,71 @@
+"""SQLAlchemy models for properties and rooms."""
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Integer, Text, ARRAY, Date, Numeric
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+import uuid
+import enum
+
+from app.database import Base
+
+
+class GenderPreference(str, enum.Enum):
+    male = "male"
+    female = "female"
+    mixed = "mixed"
+
+
+class Property(Base):
+    __tablename__ = "properties"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    address = Column(Text, nullable=False)
+    city = Column(String(100), nullable=False, index=True)
+    locality = Column(String(100))
+    latitude = Column(Numeric(10, 8))
+    longitude = Column(Numeric(11, 8))
+    gender_preference = Column(ENUM('male', 'female', 'mixed', name='gender_preference', create_type=False), nullable=False)
+    amenities = Column(ARRAY(Text))
+    monthly_rent = Column(Integer, nullable=False)
+    deposit = Column(Integer, nullable=False)
+    rules = Column(Text)
+    photos = Column(ARRAY(Text))
+    available_from = Column(Date, nullable=False)
+    status = Column(String(20), default="active", index=True)
+    auto_approve = Column(Boolean, default=False)
+    instant_booking = Column(Boolean, default=False)
+    cancellation_policy = Column(Text)
+    virtual_tour_url = Column(Text)
+    safety_score = Column(Integer)
+    nearby_amenities = Column(JSONB)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    owner = relationship("User", back_populates="properties")
+    rooms = relationship("Room", back_populates="property", cascade="all, delete-orphan")
+    bookings = relationship("Booking", back_populates="property", cascade="all, delete-orphan")
+    favorites = relationship("Favorite", back_populates="property", cascade="all, delete-orphan")
+    reviews = relationship("Review", back_populates="property", cascade="all, delete-orphan")
+    conversations = relationship("Conversation", back_populates="property", cascade="all, delete-orphan")
+
+
+class Room(Base):
+    __tablename__ = "rooms"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    property_id = Column(UUID(as_uuid=True), ForeignKey("properties.id", ondelete="CASCADE"), nullable=False)
+    room_type = Column(String(50), nullable=False)
+    bed_count = Column(Integer, nullable=False)
+    price = Column(Integer, nullable=False)
+    is_available = Column(Boolean, default=True)
+    room_photos = Column(ARRAY(Text))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    property = relationship("Property", back_populates="rooms")
+    bookings = relationship("Booking", back_populates="room")

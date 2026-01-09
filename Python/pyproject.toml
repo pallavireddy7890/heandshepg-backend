@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heandshepg-backend"
+version = "1.0.0"
+description = "He&She PG Booking Platform Backend"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "He&She PG Team"}
+]
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-jose>=3.3.0",
+    "passlib>=1.7.0",
+    "bcrypt>=4.0.0",
+    "python-multipart>=0.0.6",
+    "alembic>=1.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "httpx>=0.25.0",
+]

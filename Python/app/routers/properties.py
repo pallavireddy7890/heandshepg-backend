@@ -1,0 +1,291 @@
+"""Properties router."""
+from typing import List, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
+from app.database import get_db
+from app.models import User, Property, Room, Review, Profile
+from app.schemas import (
+    PropertyCreate,
+    PropertyUpdate,
+    PropertyResponse,
+    PropertyListResponse,
+    PropertyDetailResponse,
+    RoomCreate,
+    RoomUpdate,
+    RoomResponse,
+    PropertyFilter,
+    GenderPreferenceEnum,
+)
+from app.utils.security import get_current_user, require_owner
+
+router = APIRouter(prefix="/properties", tags=["Properties"])
+
+
+@router.get("", response_model=List[PropertyListResponse])
+async def list_properties(
+    db: Session = Depends(get_db),
+    city: Optional[str] = None,
+    locality: Optional[str] = None,
+    gender_preference: Optional[str] = None,
+    min_rent: Optional[int] = None,
+    max_rent: Optional[int] = None,
+    amenities: Optional[str] = None,  # Comma-separated
+    sort_by: Optional[str] = "newest",
+    skip: int = 0,
+    limit: int = 50,
+):
+    """List properties with optional filters."""
+    query = db.query(Property).filter(Property.status == "active")
+    
+    if city:
+        query = query.filter(Property.city.ilike(f"%{city}%"))
+    if locality:
+        query = query.filter(Property.locality.ilike(f"%{locality}%"))
+    if gender_preference:
+        query = query.filter(Property.gender_preference == gender_preference)
+    if min_rent:
+        query = query.filter(Property.monthly_rent >= min_rent)
+    if max_rent:
+        query = query.filter(Property.monthly_rent <= max_rent)
+    if amenities:
+        amenity_list = [a.strip() for a in amenities.split(",")]
+        for amenity in amenity_list:
+            query = query.filter(Property.amenities.contains([amenity]))
+    
+    # Sorting
+    if sort_by == "price_low":
+        query = query.order_by(Property.monthly_rent.asc())
+    elif sort_by == "price_high":
+        query = query.order_by(Property.monthly_rent.desc())
+    else:  # newest
+        query = query.order_by(Property.created_at.desc())
+    
+    properties = query.offset(skip).limit(limit).all()
+    return properties
+
+
+@router.get("/{property_id}", response_model=PropertyDetailResponse)
+async def get_property(
+    property_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Get property details by ID."""
+    property = db.query(Property).filter(Property.id == property_id).first()
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found"
+        )
+    
+    # Get rooms
+    rooms = db.query(Room).filter(Room.property_id == property_id).all()
+    
+    # Get owner profile
+    owner_profile = db.query(Profile).filter(Profile.user_id == property.owner_id).first()
+    
+    # Get reviews stats
+    review_stats = db.query(
+        func.avg(Review.rating).label("avg_rating"),
+        func.count(Review.id).label("count")
+    ).filter(Review.property_id == property_id).first()
+    
+    response = PropertyDetailResponse.model_validate(property)
+    response.rooms = [RoomResponse.model_validate(r) for r in rooms]
+    response.owner_profile = {
+        "name": owner_profile.name if owner_profile else "Owner",
+        "phone": owner_profile.phone if owner_profile else None,
+        "profile_photo": owner_profile.profile_photo if owner_profile else None,
+    }
+    response.average_rating = float(review_stats.avg_rating) if review_stats.avg_rating else None
+    response.review_count = review_stats.count or 0
+    
+    return response
+
+
+@router.post("", response_model=PropertyResponse, dependencies=[Depends(require_owner)])
+async def create_property(
+    property_data: PropertyCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new property (owner only)."""
+    new_property = Property(
+        owner_id=current_user.id,
+        **property_data.model_dump()
+    )
+    db.add(new_property)
+    db.commit()
+    db.refresh(new_property)
+    return new_property
+
+
+@router.put("/{property_id}", response_model=PropertyResponse, dependencies=[Depends(require_owner)])
+async def update_property(
+    property_id: UUID,
+    property_data: PropertyUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update a property (owner only)."""
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.owner_id == current_user.id
+    ).first()
+    
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found or you don't have permission to edit it"
+        )
+    
+    update_data = property_data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(property, field, value)
+    
+    db.commit()
+    db.refresh(property)
+    return property
+
+
+@router.delete("/{property_id}", dependencies=[Depends(require_owner)])
+async def delete_property(
+    property_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a property (owner only)."""
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.owner_id == current_user.id
+    ).first()
+    
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found or you don't have permission to delete it"
+        )
+    
+    db.delete(property)
+    db.commit()
+    return {"message": "Property deleted successfully"}
+
+
+# Room endpoints
+@router.get("/{property_id}/rooms", response_model=List[RoomResponse])
+async def get_property_rooms(
+    property_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Get rooms for a property."""
+    rooms = db.query(Room).filter(Room.property_id == property_id).all()
+    return rooms
+
+
+@router.post("/{property_id}/rooms", response_model=RoomResponse, dependencies=[Depends(require_owner)])
+async def create_room(
+    property_id: UUID,
+    room_data: RoomCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Add a room to a property (owner only)."""
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.owner_id == current_user.id
+    ).first()
+    
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found or you don't have permission"
+        )
+    
+    new_room = Room(
+        property_id=property_id,
+        **room_data.model_dump()
+    )
+    db.add(new_room)
+    db.commit()
+    db.refresh(new_room)
+    return new_room
+
+
+@router.put("/{property_id}/rooms/{room_id}", response_model=RoomResponse, dependencies=[Depends(require_owner)])
+async def update_room(
+    property_id: UUID,
+    room_id: UUID,
+    room_data: RoomUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update a room (owner only)."""
+    # Verify ownership
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.owner_id == current_user.id
+    ).first()
+    
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found or you don't have permission"
+        )
+    
+    room = db.query(Room).filter(
+        Room.id == room_id,
+        Room.property_id == property_id
+    ).first()
+    
+    if not room:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+    
+    update_data = room_data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(room, field, value)
+    
+    db.commit()
+    db.refresh(room)
+    return room
+
+
+@router.delete("/{property_id}/rooms/{room_id}", dependencies=[Depends(require_owner)])
+async def delete_room(
+    property_id: UUID,
+    room_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a room (owner only)."""
+    # Verify ownership
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.owner_id == current_user.id
+    ).first()
+    
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found or you don't have permission"
+        )
+    
+    room = db.query(Room).filter(
+        Room.id == room_id,
+        Room.property_id == property_id
+    ).first()
+    
+    if not room:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+    
+    db.delete(room)
+    db.commit()
+    return {"message": "Room deleted successfully"}

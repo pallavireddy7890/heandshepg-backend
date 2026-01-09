@@ -1,0 +1,99 @@
+"""SQLAlchemy models for users, profiles, and roles."""
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum, Text, ARRAY
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+import uuid
+import enum
+
+from app.database import Base
+
+
+class AppRole(str, enum.Enum):
+    customer = "customer"
+    owner = "owner"
+    admin = "admin"
+
+
+class KycStatus(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
+    is_verified = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    profile = relationship("Profile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
+    owner_profile = relationship("OwnersProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    properties = relationship("Property", back_populates="owner", cascade="all, delete-orphan")
+    customer_bookings = relationship("Booking", foreign_keys="Booking.customer_id", back_populates="customer")
+    owner_bookings = relationship("Booking", foreign_keys="Booking.owner_id", back_populates="owner")
+    favorites = relationship("Favorite", back_populates="user", cascade="all, delete-orphan")
+    reviews = relationship("Review", back_populates="user", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+
+
+class Profile(Base):
+    __tablename__ = "profiles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    phone = Column(String(20))
+    email = Column(String(255))
+    profile_photo = Column(Text)
+    address = Column(Text)
+    city = Column(String(100))
+    work_type = Column(String(100))
+    work_place = Column(String(255))
+    mother_tongue = Column(String(50))
+    languages_known = Column(ARRAY(Text))
+    emergency_contact_name = Column(String(255))
+    emergency_contact_phone = Column(String(20))
+    emergency_contact_address = Column(Text)
+    payment_reminders_enabled = Column(Boolean, default=True)
+    maintenance_reminders_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="profile")
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role = Column(Enum(AppRole), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="roles")
+
+
+class OwnersProfile(Base):
+    __tablename__ = "owners_profile"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    id_proof_url = Column(Text)
+    property_documents = Column(ARRAY(Text))
+    approval_status = Column(Enum(KycStatus), default=KycStatus.pending)
+    admin_notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="owner_profile")
