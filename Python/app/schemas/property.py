@@ -77,6 +77,7 @@ class PropertyResponse(PropertyBase):
 
 class PropertyListResponse(BaseModel):
     id: UUID
+    owner_id: UUID
     title: str
     city: str
     locality: Optional[str]

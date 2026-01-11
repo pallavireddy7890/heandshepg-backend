@@ -1,9 +1,9 @@
 """Bookings router."""
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -15,9 +15,28 @@ from app.schemas import (
     BookingResponse,
     BookingDetailResponse,
 )
-from app.utils.security import get_current_user
+from app.utils.security import get_current_user, require_role
+
+require_admin = require_role("admin")
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
+
+
+@router.get("/all", response_model=List[BookingResponse], dependencies=[Depends(require_admin)])
+async def list_all_bookings(
+    db: Session = Depends(get_db),
+    status_filter: Optional[str] = None,
+    skip: int = 0,
+    limit: int = Query(default=50, le=100),
+):
+    """List all bookings on the platform (admin only)."""
+    query = db.query(Booking)
+    
+    if status_filter:
+        query = query.filter(Booking.status == status_filter)
+    
+    bookings = query.order_by(Booking.created_at.desc()).offset(skip).limit(limit).all()
+    return bookings
 
 
 @router.get("", response_model=List[BookingResponse])
