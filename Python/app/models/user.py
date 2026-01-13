@@ -50,20 +50,56 @@ class Profile(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
     name = Column(String(255), nullable=False)
+    display_name = Column(String(255))
+    business_name = Column(String(255))
+    about = Column(Text)
     phone = Column(String(20))
+    phone_verified = Column(Boolean, default=False)
     email = Column(String(255))
     profile_photo = Column(Text)
     address = Column(Text)
+    current_address = Column(Text)
+    permanent_address = Column(Text)
     city = Column(String(100))
+    
+    # Personal details
+    gender = Column(String(20))
+    date_of_birth = Column(String(20))
+    
+    # Work details
     work_type = Column(String(100))
     work_place = Column(String(255))
     mother_tongue = Column(String(50))
     languages_known = Column(ARRAY(Text))
+    
+    # Emergency contact
     emergency_contact_name = Column(String(255))
     emergency_contact_phone = Column(String(20))
     emergency_contact_address = Column(Text)
+    
+    # Notification preferences
     payment_reminders_enabled = Column(Boolean, default=True)
     maintenance_reminders_enabled = Column(Boolean, default=True)
+    email_notifications = Column(Boolean, default=True)
+    sms_notifications = Column(Boolean, default=True)
+    push_notifications = Column(Boolean, default=False)
+    
+    # Privacy settings
+    hide_contact_info = Column(Boolean, default=False)
+    
+    # Bank details
+    bank_account_number = Column(String(50))
+    bank_ifsc_code = Column(String(20))
+    bank_name = Column(String(255))
+    
+    # KYC Documents
+    pan_card_url = Column(Text)
+    gst_doc_url = Column(Text)
+    aadhar_front_url = Column(Text)
+    aadhar_back_url = Column(Text)
+    college_company_id_url = Column(Text)
+    profile_verification_status = Column(String(20), default="pending")
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

@@ -30,6 +30,13 @@ class RoommateProfileCreate(BaseModel):
     languages: Optional[List[str]] = []
     hobbies: Optional[List[str]] = []
     bio: Optional[str] = None
+    # Additional fields for frontend compatibility
+    dietary_preference: Optional[str] = None
+    smoking: Optional[bool] = False
+    drinking: Optional[bool] = False
+    pets_allowed: Optional[bool] = False
+    cleanliness_level: Optional[int] = 3
+    is_active: Optional[bool] = True
 
 
 class RoommateProfileResponse(BaseModel):
@@ -48,6 +55,12 @@ class RoommateProfileResponse(BaseModel):
     hobbies: Optional[List[str]]
     bio: Optional[str]
     is_active: bool
+    # Additional fields
+    dietary_preference: Optional[str] = None
+    smoking: Optional[bool] = False
+    drinking: Optional[bool] = False
+    pets_allowed: Optional[bool] = False
+    cleanliness_level: Optional[int] = 3
     user_name: Optional[str] = None
     user_photo: Optional[str] = None
 
@@ -157,24 +170,24 @@ async def get_roommate_matches(
             detail="Please create a roommate profile first"
         )
     
-    # Find compatible profiles
+    # Find compatible profiles (show all active profiles from other users)
     query = db.query(RoommateProfile).filter(
         RoommateProfile.user_id != current_user.id,
         RoommateProfile.is_active == True
     )
     
-    # Filter by city if specified
-    if my_profile.preferred_city:
-        query = query.filter(RoommateProfile.preferred_city == my_profile.preferred_city)
+    # Note: City filter removed to show all potential matches
+    # Same-city matches will get higher scores in calculate_match_score
     
-    # Filter by budget overlap
-    if my_profile.budget_max:
-        query = query.filter(
-            or_(
-                RoommateProfile.budget_min == None,
-                RoommateProfile.budget_min <= my_profile.budget_max
-            )
-        )
+    # Filter by budget overlap (optional - don't exclude if budget not set)
+    # Commenting out strict budget filter to show more results
+    # if my_profile.budget_max:
+    #     query = query.filter(
+    #         or_(
+    #             RoommateProfile.budget_min == None,
+    #             RoommateProfile.budget_min <= my_profile.budget_max
+    #         )
+    #     )
     
     potential_matches = query.limit(20).all()
     

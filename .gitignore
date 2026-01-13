@@ -40,3 +40,7 @@ htmlcov/
 # Database
 *.db
 *.sqlite3
+
+# Uploads - user uploaded files should not be in version control
+Python/uploads/
+uploads/

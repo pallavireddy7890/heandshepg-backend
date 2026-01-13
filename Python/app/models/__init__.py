@@ -6,6 +6,7 @@ from app.models.review import Review, Favorite
 from app.models.message import Conversation, Message, Notification
 from app.models.admin import AuditLog, SystemSettings
 from app.models.features import RoommateProfile, RoommateMatch, ReferralCode, Referral
+from app.models.city import City, Area
 
 __all__ = [
     # User models
@@ -42,6 +43,9 @@ __all__ = [
     "RoommateMatch",
     "ReferralCode",
     "Referral",
+    # Location models
+    "City",
+    "Area",
 ]
 
 

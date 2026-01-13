@@ -1,7 +1,9 @@
 """He&She PG Backend - FastAPI Application."""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+import os
 
 from app.config import get_settings
 from app.database import engine, Base
@@ -20,6 +22,7 @@ from app.routers import (
     payments_router,
 )
 from app.routers.websocket import router as websocket_router
+from app.routers.cities import router as cities_router
 
 settings = get_settings()
 
@@ -80,6 +83,12 @@ app.include_router(roommates_router, prefix="/api")
 app.include_router(referrals_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
+app.include_router(cities_router, prefix="/api")
+
+# Serve uploaded files
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/")

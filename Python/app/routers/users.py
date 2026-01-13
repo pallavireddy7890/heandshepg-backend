@@ -51,6 +51,7 @@ async def update_profile(
     return profile
 
 
+
 @router.get("/notifications", response_model=List[NotificationResponse])
 async def get_notifications(
     current_user: User = Depends(get_current_user),
@@ -100,3 +101,67 @@ async def mark_all_notifications_read(
     ).update({"read": True})
     db.commit()
     return {"message": "All notifications marked as read"}
+
+
+# ========== File Upload ==========
+from fastapi import UploadFile, File
+import os
+import uuid as uuid_lib
+from datetime import datetime
+
+# Configure upload directory
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+
+
+@router.post("/upload-document")
+async def upload_document(
+    file: UploadFile = File(...),
+    document_type: str = "general",
+    current_user: User = Depends(get_current_user)
+):
+    """Upload a document (KYC, ID proof, etc)."""
+    # Validate file extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File type not allowed. Allowed types: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    # Read file content
+    content = await file.read()
+    
+    # Validate file size
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File too large. Maximum size is 5MB."
+        )
+    
+    # Create user-specific directory
+    user_dir = os.path.join(UPLOAD_DIR, str(current_user.id))
+    os.makedirs(user_dir, exist_ok=True)
+    
+    # Generate unique filename
+    unique_filename = f"{document_type}_{uuid_lib.uuid4().hex}{ext}"
+    file_path = os.path.join(user_dir, unique_filename)
+    
+    # Save file
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    # Return URL path (relative) - user must click "Save Changes" to persist to profile
+    url_path = f"/uploads/{current_user.id}/{unique_filename}"
+    
+    return {
+        "message": "File uploaded successfully",
+        "url": url_path,
+        "filename": unique_filename,
+        "document_type": document_type
+    }
+
+

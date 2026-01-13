@@ -13,31 +13,40 @@ from app.utils.security import get_current_user
 router = APIRouter(prefix="/favorites", tags=["Favorites"])
 
 
-@router.get("", response_model=List[FavoriteWithProperty])
+@router.get("")
 async def list_favorites(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """List user's favorite properties."""
-    favorites = db.query(Favorite).filter(Favorite.user_id == current_user.id).all()
-    
-    result = []
-    for fav in favorites:
-        property = db.query(Property).filter(Property.id == fav.property_id).first()
-        fav_response = FavoriteWithProperty.model_validate(fav)
-        if property:
-            fav_response.property = {
-                "id": str(property.id),
-                "title": property.title,
-                "city": property.city,
-                "locality": property.locality,
-                "monthly_rent": property.monthly_rent,
-                "photos": property.photos,
-                "gender_preference": property.gender_preference,
+    try:
+        favorites = db.query(Favorite).filter(Favorite.user_id == current_user.id).all()
+        
+        result = []
+        for fav in favorites:
+            property_obj = db.query(Property).filter(Property.id == fav.property_id).first()
+            fav_dict = {
+                "id": str(fav.id),
+                "user_id": str(fav.user_id),
+                "property_id": str(fav.property_id),
+                "created_at": fav.created_at.isoformat() if fav.created_at else None,
             }
-        result.append(fav_response)
-    
-    return result
+            if property_obj:
+                fav_dict["property"] = {
+                    "id": str(property_obj.id),
+                    "title": property_obj.title,
+                    "city": property_obj.city,
+                    "locality": property_obj.locality,
+                    "monthly_rent": property_obj.monthly_rent,
+                    "photos": property_obj.photos,
+                    "gender_preference": property_obj.gender_preference,
+                }
+            result.append(fav_dict)
+        
+        return result
+    except Exception as e:
+        print(f"Error in list_favorites: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/ids", response_model=List[str])

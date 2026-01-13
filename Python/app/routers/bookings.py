@@ -22,7 +22,7 @@ require_admin = require_role("admin")
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
 
-@router.get("/all", response_model=List[BookingResponse], dependencies=[Depends(require_admin)])
+@router.get("/all", dependencies=[Depends(require_admin)])
 async def list_all_bookings(
     db: Session = Depends(get_db),
     status_filter: Optional[str] = None,
@@ -30,31 +30,114 @@ async def list_all_bookings(
     limit: int = Query(default=50, le=100),
 ):
     """List all bookings on the platform (admin only)."""
-    query = db.query(Booking)
+    from sqlalchemy.orm import joinedload
+    
+    query = db.query(Booking).options(
+        joinedload(Booking.property),
+        joinedload(Booking.customer),
+        joinedload(Booking.owner),
+    )
     
     if status_filter:
         query = query.filter(Booking.status == status_filter)
     
     bookings = query.order_by(Booking.created_at.desc()).offset(skip).limit(limit).all()
-    return bookings
+    
+    # Enrich with property and user details
+    result = []
+    for booking in bookings:
+        # Get customer name from profile or user email
+        customer_name = "Unknown Customer"
+        if booking.customer_id:
+            customer_profile = db.query(Profile).filter(Profile.user_id == booking.customer_id).first()
+            if customer_profile:
+                customer_name = customer_profile.name
+            elif booking.customer:
+                customer_name = booking.customer.email
+        
+        # Get owner name from profile or user email
+        owner_name = "Unknown Owner"
+        if booking.owner_id:
+            owner_profile = db.query(Profile).filter(Profile.user_id == booking.owner_id).first()
+            if owner_profile:
+                owner_name = owner_profile.name
+            elif booking.owner:
+                owner_name = booking.owner.email
+        
+        # Get property title
+        property_title = "Unknown Property"
+        if booking.property:
+            property_title = booking.property.title
+        
+        result.append({
+            "id": str(booking.id),
+            "property_id": str(booking.property_id),
+            "property_title": property_title,
+            "customer_name": customer_name,
+            "owner_name": owner_name,
+            "status": booking.status,
+            "start_date": booking.start_date.isoformat() if booking.start_date else None,
+            "end_date": booking.end_date.isoformat() if booking.end_date else None,
+            "total_amount": booking.amount or 0,
+            "created_at": booking.created_at.isoformat() if booking.created_at else None,
+        })
+    
+    return result
 
 
-@router.get("", response_model=List[BookingResponse])
+@router.get("")
 async def list_bookings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     status_filter: str = None,
 ):
     """List current user's bookings (as customer or owner)."""
-    query = db.query(Booking).filter(
-        (Booking.customer_id == current_user.id) | (Booking.owner_id == current_user.id)
-    )
-    
-    if status_filter:
-        query = query.filter(Booking.status == status_filter)
-    
-    bookings = query.order_by(Booking.created_at.desc()).all()
-    return bookings
+    try:
+        query = db.query(Booking).filter(
+            (Booking.customer_id == current_user.id) | (Booking.owner_id == current_user.id)
+        )
+        
+        if status_filter:
+            query = query.filter(Booking.status == status_filter)
+        
+        bookings = query.order_by(Booking.created_at.desc()).all()
+        
+        result = []
+        for booking in bookings:
+            # Get property details
+            property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+            
+            # Get customer name
+            customer_name = None
+            if booking.customer_id:
+                customer_profile = db.query(Profile).filter(Profile.user_id == booking.customer_id).first()
+                if customer_profile:
+                    customer_name = customer_profile.name
+            
+            result.append({
+                "id": str(booking.id),
+                "property_id": str(booking.property_id) if booking.property_id else None,
+                "room_id": str(booking.room_id) if booking.room_id else None,
+                "customer_id": str(booking.customer_id) if booking.customer_id else None,
+                "owner_id": str(booking.owner_id) if booking.owner_id else None,
+                "status": booking.status.value if hasattr(booking.status, 'value') else str(booking.status),
+                "start_date": booking.start_date.isoformat() if booking.start_date else None,
+                "end_date": booking.end_date.isoformat() if booking.end_date else None,
+                "amount": booking.amount or 0,
+                "security_deposit": booking.security_deposit or 0,
+                "created_at": booking.created_at.isoformat() if booking.created_at else None,
+                "property": {
+                    "title": property_obj.title if property_obj else None,
+                    "city": property_obj.city if property_obj else None,
+                    "locality": property_obj.locality if property_obj else None,
+                } if property_obj else None,
+                "customer_name": customer_name,
+            })
+        
+        return result
+    except Exception as e:
+        print(f"Error in list_bookings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{booking_id}", response_model=BookingDetailResponse)

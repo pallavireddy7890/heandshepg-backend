@@ -77,20 +77,55 @@ class UserWithRole(UserResponse):
 # Profile Schemas
 class ProfileBase(BaseModel):
     name: str
+    display_name: Optional[str] = None
+    business_name: Optional[str] = None
+    about: Optional[str] = None
     phone: Optional[str] = None
+    phone_verified: Optional[bool] = False
     email: Optional[str] = None
     profile_photo: Optional[str] = None
     address: Optional[str] = None
+    current_address: Optional[str] = None
+    permanent_address: Optional[str] = None
     city: Optional[str] = None
+    
+    # Personal details
+    gender: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    
+    # Work details
     work_type: Optional[str] = None
     work_place: Optional[str] = None
     mother_tongue: Optional[str] = None
     languages_known: Optional[List[str]] = None
+    
+    # Emergency contact
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     emergency_contact_address: Optional[str] = None
+    
+    # Notification preferences
     payment_reminders_enabled: Optional[bool] = True
     maintenance_reminders_enabled: Optional[bool] = True
+    email_notifications: Optional[bool] = True
+    sms_notifications: Optional[bool] = True
+    push_notifications: Optional[bool] = False
+    
+    # Privacy settings
+    hide_contact_info: Optional[bool] = False
+    
+    # Bank details
+    bank_account_number: Optional[str] = None
+    bank_ifsc_code: Optional[str] = None
+    bank_name: Optional[str] = None
+    
+    # KYC Documents
+    pan_card_url: Optional[str] = None
+    gst_doc_url: Optional[str] = None
+    aadhar_front_url: Optional[str] = None
+    aadhar_back_url: Optional[str] = None
+    college_company_id_url: Optional[str] = None
+    profile_verification_status: Optional[str] = "pending"
 
 
 class ProfileCreate(ProfileBase):
@@ -99,19 +134,53 @@ class ProfileCreate(ProfileBase):
 
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
+    display_name: Optional[str] = None
+    business_name: Optional[str] = None
+    about: Optional[str] = None
     phone: Optional[str] = None
     profile_photo: Optional[str] = None
     address: Optional[str] = None
+    current_address: Optional[str] = None
+    permanent_address: Optional[str] = None
     city: Optional[str] = None
+    
+    # Personal details
+    gender: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    
+    # Work details
     work_type: Optional[str] = None
     work_place: Optional[str] = None
     mother_tongue: Optional[str] = None
     languages_known: Optional[List[str]] = None
+    
+    # Emergency contact
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     emergency_contact_address: Optional[str] = None
+    
+    # Notification preferences
     payment_reminders_enabled: Optional[bool] = None
     maintenance_reminders_enabled: Optional[bool] = None
+    email_notifications: Optional[bool] = None
+    sms_notifications: Optional[bool] = None
+    push_notifications: Optional[bool] = None
+    
+    # Privacy settings
+    hide_contact_info: Optional[bool] = None
+    
+    # Bank details
+    bank_account_number: Optional[str] = None
+    bank_ifsc_code: Optional[str] = None
+    bank_name: Optional[str] = None
+    
+    # KYC Documents
+    pan_card_url: Optional[str] = None
+    gst_doc_url: Optional[str] = None
+    aadhar_front_url: Optional[str] = None
+    aadhar_back_url: Optional[str] = None
+    college_company_id_url: Optional[str] = None
+    profile_verification_status: Optional[str] = None
 
 
 class ProfileResponse(ProfileBase):

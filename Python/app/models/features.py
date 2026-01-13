@@ -43,6 +43,13 @@ class RoommateProfile(Base):
     hobbies = Column(ARRAY(String))
     bio = Column(Text)
     
+    # Additional preferences (frontend compatibility)
+    dietary_preference = Column(String(50))
+    smoking = Column(Boolean, default=False)
+    drinking = Column(Boolean, default=False)
+    pets_allowed = Column(Boolean, default=False)
+    cleanliness_level = Column(Integer, default=3)
+    
     # Matching
     is_active = Column(Boolean, default=True)
     
