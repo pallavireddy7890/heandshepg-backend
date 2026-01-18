@@ -19,38 +19,29 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Add missing profile columns
-    profile_columns = [
-        ('current_address', sa.Text()),
-        ('permanent_address', sa.Text()),
-        ('gender', sa.String(20)),
-        ('date_of_birth', sa.String(20)),
-        ('email_notifications', sa.Boolean(), 'true'),
-        ('sms_notifications', sa.Boolean(), 'true'),
-        ('push_notifications', sa.Boolean(), 'false'),
-        ('hide_contact_info', sa.Boolean(), 'false'),
-        ('bank_account_number', sa.String(50)),
-        ('bank_ifsc_code', sa.String(20)),
-        ('bank_name', sa.String(255)),
-        ('pan_card_url', sa.Text()),
-        ('gst_doc_url', sa.Text()),
-        ('aadhar_front_url', sa.Text()),
-        ('aadhar_back_url', sa.Text()),
-        ('college_company_id_url', sa.Text()),
-        ('profile_verification_status', sa.String(20), 'pending'),
+    # Add missing profile columns using raw SQL with IF NOT EXISTS
+    profile_columns_sql = [
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS current_address TEXT",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS permanent_address TEXT",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS gender VARCHAR(20)",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS date_of_birth VARCHAR(20)",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS email_notifications BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sms_notifications BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS push_notifications BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS hide_contact_info BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(50)",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS bank_ifsc_code VARCHAR(20)",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS bank_name VARCHAR(255)",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS pan_card_url TEXT",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS gst_doc_url TEXT",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS aadhar_front_url TEXT",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS aadhar_back_url TEXT",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS college_company_id_url TEXT",
+        "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_verification_status VARCHAR(20) DEFAULT 'pending'",
     ]
     
-    for col_def in profile_columns:
-        col_name = col_def[0]
-        col_type = col_def[1]
-        default = col_def[2] if len(col_def) > 2 else None
-        try:
-            if default:
-                op.add_column('profiles', sa.Column(col_name, col_type, server_default=default, nullable=True))
-            else:
-                op.add_column('profiles', sa.Column(col_name, col_type, nullable=True))
-        except Exception:
-            pass  # Column may already exist
+    for sql in profile_columns_sql:
+        op.execute(sql)
     
     # Create referral_codes table
     op.execute("""

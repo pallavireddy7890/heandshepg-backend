@@ -18,11 +18,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Add new columns to profiles table
-    op.add_column('profiles', sa.Column('display_name', sa.String(255), nullable=True))
-    op.add_column('profiles', sa.Column('business_name', sa.String(255), nullable=True))
-    op.add_column('profiles', sa.Column('about', sa.Text(), nullable=True))
-    op.add_column('profiles', sa.Column('phone_verified', sa.Boolean(), server_default='false', nullable=True))
+    # Add new columns to profiles table using IF NOT EXISTS
+    op.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)")
+    op.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS business_name VARCHAR(255)")
+    op.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS about TEXT")
+    op.execute("ALTER TABLE profiles ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE")
 
 
 def downgrade() -> None:
@@ -30,3 +30,4 @@ def downgrade() -> None:
     op.drop_column('profiles', 'about')
     op.drop_column('profiles', 'business_name')
     op.drop_column('profiles', 'display_name')
+
