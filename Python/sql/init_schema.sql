@@ -63,20 +63,49 @@ CREATE TABLE IF NOT EXISTS profiles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255),
+    business_name VARCHAR(255),
+    about TEXT,
     phone VARCHAR(20),
+    phone_verified BOOLEAN DEFAULT FALSE,
     email VARCHAR(255),
     profile_photo TEXT,
     address TEXT,
+    current_address TEXT,
+    permanent_address TEXT,
     city VARCHAR(100),
+    -- Personal details
+    gender VARCHAR(20),
+    date_of_birth VARCHAR(20),
+    -- Work details
     work_type VARCHAR(100),
     work_place VARCHAR(255),
     mother_tongue VARCHAR(50),
     languages_known TEXT[],
+    -- Emergency contact
     emergency_contact_name VARCHAR(255),
     emergency_contact_phone VARCHAR(20),
     emergency_contact_address TEXT,
+    -- Notification preferences
     payment_reminders_enabled BOOLEAN DEFAULT TRUE,
     maintenance_reminders_enabled BOOLEAN DEFAULT TRUE,
+    email_notifications BOOLEAN DEFAULT TRUE,
+    sms_notifications BOOLEAN DEFAULT TRUE,
+    push_notifications BOOLEAN DEFAULT FALSE,
+    -- Privacy settings
+    hide_contact_info BOOLEAN DEFAULT FALSE,
+    -- Bank details
+    bank_account_number VARCHAR(50),
+    bank_ifsc_code VARCHAR(20),
+    bank_name VARCHAR(255),
+    -- KYC Documents
+    pan_card_url TEXT,
+    gst_doc_url TEXT,
+    aadhar_front_url TEXT,
+    aadhar_back_url TEXT,
+    college_company_id_url TEXT,
+    profile_verification_status VARCHAR(20) DEFAULT 'pending',
+    -- Timestamps
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -252,39 +281,88 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Referral codes table
+CREATE TABLE IF NOT EXISTS referral_codes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
+    code VARCHAR(20) UNIQUE NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Referrals table
 CREATE TABLE IF NOT EXISTS referrals (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     referrer_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
-    referee_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    referral_code VARCHAR(20) UNIQUE NOT NULL,
-    reward_amount INTEGER DEFAULT 0,
+    referred_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    referral_code_id UUID REFERENCES referral_codes(id),
+    status VARCHAR(20) DEFAULT 'pending',
+    reward_amount DECIMAL(10,2) DEFAULT 0,
     reward_claimed BOOLEAN DEFAULT FALSE,
-    claimed_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    completed_at TIMESTAMP WITH TIME ZONE
 );
 
--- Roommate preferences table
-CREATE TABLE IF NOT EXISTS roommate_preferences (
+-- Roommate profiles table
+CREATE TABLE IF NOT EXISTS roommate_profiles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
-    looking_for_roommate BOOLEAN DEFAULT FALSE,
-    preferred_gender VARCHAR(20),
-    age_range VARCHAR(20),
+    -- Basic Info
+    age INTEGER,
+    gender VARCHAR(20),
     occupation VARCHAR(100),
     budget_min INTEGER,
     budget_max INTEGER,
-    preferred_locations TEXT[],
-    lifestyle TEXT[],
-    interests TEXT[],
-    dietary_preference VARCHAR(50),
-    smoking BOOLEAN,
-    drinking BOOLEAN,
-    pets BOOLEAN,
-    cleanliness_level INTEGER CHECK (cleanliness_level >= 1 AND cleanliness_level <= 5),
+    preferred_location VARCHAR(255),
+    preferred_city VARCHAR(100),
+    move_in_date TIMESTAMP WITH TIME ZONE,
+    -- Preferences
+    preferences TEXT[],
+    languages TEXT[],
+    hobbies TEXT[],
     bio TEXT,
+    -- Additional preferences
+    dietary_preference VARCHAR(50),
+    smoking BOOLEAN DEFAULT FALSE,
+    drinking BOOLEAN DEFAULT FALSE,
+    pets_allowed BOOLEAN DEFAULT FALSE,
+    cleanliness_level INTEGER DEFAULT 3,
+    -- Matching
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Roommate matches table
+CREATE TABLE IF NOT EXISTS roommate_matches (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    matched_user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    match_score DECIMAL(5,2),
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Cities table
+CREATE TABLE IF NOT EXISTS cities (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) UNIQUE NOT NULL,
+    image_url TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    display_order VARCHAR(10) DEFAULT '0',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Areas table
+CREATE TABLE IF NOT EXISTS areas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    city_id UUID REFERENCES cities(id) ON DELETE CASCADE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    display_order VARCHAR(10) DEFAULT '0',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Property comparisons table
