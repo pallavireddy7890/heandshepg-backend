@@ -15,6 +15,8 @@ from app.schemas.user import (
     AuthResponse,
     AppRoleEnum,
     KycStatusEnum,
+    NotificationStatus,
+    ProfileUpdateResponse,
 )
 from app.schemas.property import (
     PropertyCreate,
@@ -114,4 +116,7 @@ __all__ = [
     "ConversationWithMessages",
     "NotificationResponse",
     "NotificationMarkRead",
+    # Notification status schemas
+    "NotificationStatus",
+    "ProfileUpdateResponse",
 ]

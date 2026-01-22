@@ -108,7 +108,6 @@ async def websocket_chat(
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
     except Exception as e:
-        print(f"WebSocket error: {e}")
         manager.disconnect(websocket, user_id)
 
 

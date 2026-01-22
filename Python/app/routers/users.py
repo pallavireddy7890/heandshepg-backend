@@ -28,13 +28,21 @@ async def get_profile(
     return profile
 
 
-@router.put("/profile", response_model=ProfileResponse)
+@router.put("/profile")
 async def update_profile(
     profile_data: ProfileUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Update current user's profile."""
+    """
+    Update current user's profile.
+    
+    When email_notifications or sms_notifications are enabled (changed from false to true),
+    sends a confirmation notification to the user.
+    """
+    from app.schemas import NotificationStatus, ProfileUpdateResponse
+    from app.services import notification_service
+    
     profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
     if not profile:
         raise HTTPException(
@@ -42,13 +50,97 @@ async def update_profile(
             detail="Profile not found"
         )
     
+    # Track notification setting changes before update
+    old_email_notifications = profile.email_notifications
+    old_sms_notifications = profile.sms_notifications
+    
+    # Get update data
     update_data = profile_data.model_dump(exclude_unset=True)
+    
+    # Check if notifications are being enabled (changed from false/None to true)
+    email_enabled = (
+        update_data.get('email_notifications') is True and
+        old_email_notifications is not True
+    )
+    sms_enabled = (
+        update_data.get('sms_notifications') is True and
+        old_sms_notifications is not True
+    )
+    
+    # Apply updates to profile
     for field, value in update_data.items():
         setattr(profile, field, value)
     
     db.commit()
     db.refresh(profile)
-    return profile
+    
+    # Initialize notification status
+    notification_status = NotificationStatus()
+    
+    # Send email confirmation if enabled
+    if email_enabled and current_user.email:
+        # Check rate limit
+        can_send = notification_service.check_rate_limit(
+            db, current_user.id, "email_confirmation"
+        )
+        if can_send:
+            success, error = notification_service.send_email_confirmation(
+                current_user.email,
+                profile.name or profile.display_name or "User"
+            )
+            notification_status.email_confirmation_sent = success
+            notification_status.email_confirmation_error = error
+            
+            # Log the notification attempt
+            notification_service.log_notification(
+                db,
+                current_user.id,
+                "email_confirmation",
+                "sent" if success else "failed",
+                error
+            )
+        else:
+            notification_status.email_already_confirmed = True
+    
+    # Send SMS confirmation if enabled
+    if sms_enabled and profile.phone:
+        # Check rate limit
+        can_send = notification_service.check_rate_limit(
+            db, current_user.id, "sms_confirmation"
+        )
+        if can_send:
+            success, error = notification_service.send_sms_confirmation(
+                profile.phone,
+                profile.name or profile.display_name or "User"
+            )
+            notification_status.sms_confirmation_sent = success
+            notification_status.sms_confirmation_error = error
+            
+            # Log the notification attempt
+            notification_service.log_notification(
+                db,
+                current_user.id,
+                "sms_confirmation",
+                "sent" if success else "failed",
+                error
+            )
+        else:
+            notification_status.sms_already_confirmed = True
+    
+    # Check if any notification was attempted
+    has_notification_status = (
+        notification_status.email_confirmation_sent is not None or
+        notification_status.sms_confirmation_sent is not None or
+        notification_status.email_already_confirmed or
+        notification_status.sms_already_confirmed
+    )
+    
+    return ProfileUpdateResponse(
+        profile=profile,
+        notification_status=notification_status if has_notification_status else None,
+        message="Profile updated successfully"
+    )
+
 
 
 

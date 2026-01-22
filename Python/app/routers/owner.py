@@ -130,7 +130,6 @@ async def get_owner_payments(
         
         return result
     except Exception as e:
-        print(f"Error in get_owner_payments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -189,7 +188,6 @@ async def get_owner_invoices(
         
         return result
     except Exception as e:
-        print(f"Error in get_owner_invoices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -251,7 +249,6 @@ async def get_financial_summary(
             "monthly_revenue": float(monthly_revenue),
         }
     except Exception as e:
-        print(f"Error in get_financial_summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -307,5 +304,4 @@ async def get_owner_tenants(
         
         return result
     except Exception as e:
-        print(f"Error in get_owner_tenants: {e}")
         raise HTTPException(status_code=500, detail=str(e))

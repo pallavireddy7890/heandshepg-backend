@@ -7,6 +7,10 @@ from app.models.message import Conversation, Message, Notification
 from app.models.admin import AuditLog, SystemSettings
 from app.models.features import RoommateProfile, RoommateMatch, ReferralCode, Referral
 from app.models.city import City, Area
+from app.models.notification_log import NotificationLog
+from app.models.wallet import Wallet, WalletTransaction, TransactionOTP, TransactionType, TransactionStatus
+from app.models.email_verification import EmailVerification
+
 
 __all__ = [
     # User models
@@ -46,6 +50,16 @@ __all__ = [
     # Location models
     "City",
     "Area",
+    # Notification models
+    "NotificationLog",
+    # Wallet models
+    "Wallet",
+    "WalletTransaction",
+    "TransactionOTP",
+    "TransactionType",
+    "TransactionStatus",
+    # Email verification
+    "EmailVerification",
 ]
 
 

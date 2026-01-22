@@ -33,58 +33,118 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 settings = get_settings()
 
 
-@router.post("/signup", response_model=AuthResponse)
+@router.post("/signup")
 async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
-    """Register a new user."""
-    from app.models import OwnersProfile, KycStatus
+    """
+    Step 1 of signup: Create pending verification and send OTP email.
     
-    # Check if email exists
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    The actual user account is created only after email verification.
+    """
+    from app.services.email_verification_service import EmailVerificationService
+    from app.models import EmailVerification
+    
+    email_lower = user_data.email.lower().strip()
+    
+    # Check if email already exists as a registered user
+    existing_user = db.query(User).filter(User.email == email_lower).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
     
+    # Create verification and send OTP
+    verification, error = EmailVerificationService.create_verification(
+        db=db,
+        email=email_lower,
+        name=user_data.name,
+        password=user_data.password,
+        role=user_data.role.value,
+        phone=user_data.phone
+    )
+    
+    if error and not verification:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=error
+        )
+    
+    return {
+        "message": "Verification OTP sent to your email",
+        "email": email_lower,
+        "expires_in_minutes": EmailVerification.OTP_EXPIRY_MINUTES,
+        "requires_verification": True
+    }
+
+
+from pydantic import BaseModel as PydanticModel
+
+class VerifyEmailRequest(PydanticModel):
+    email: str
+    otp_code: str
+
+
+@router.post("/verify-email", response_model=AuthResponse)
+async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
+    """
+    Step 2 of signup: Verify OTP and create the user account.
+    """
+    from app.services.email_verification_service import EmailVerificationService
+    from app.models import OwnersProfile, KycStatus, EmailVerification
+    
+    # Verify OTP
+    verification, error = EmailVerificationService.verify_otp(
+        db=db,
+        email=data.email,
+        otp_code=data.otp_code
+    )
+    
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error
+        )
+    
+    # OTP verified - create the actual user account
+    user_data = EmailVerificationService.get_verification_data(verification)
+    
     # Create user
-    hashed_password = get_password_hash(user_data.password)
     new_user = User(
-        email=user_data.email,
-        hashed_password=hashed_password,
+        email=user_data["email"],
+        hashed_password=user_data["hashed_password"],
         is_active=True,
-        is_verified=False,
+        is_verified=True,  # Email is now verified
     )
     db.add(new_user)
-    db.flush()  # Get the user ID
+    db.flush()
     
     # Create profile
     profile = Profile(
         user_id=new_user.id,
-        name=user_data.name,
-        email=user_data.email,
+        name=user_data["name"],
+        email=user_data["email"],
+        phone=user_data.get("phone"),
     )
     db.add(profile)
     
-    # Assign role based on signup type
-    role_to_assign = AppRole.customer
-    if user_data.role == AppRoleEnum.owner:
-        # Assign owner role immediately
-        role_to_assign = AppRole.owner
-        # Create OwnersProfile for KYC tracking (pending approval)
+    # Assign role
+    role_to_assign = user_data["role"]
+    if role_to_assign == AppRole.owner:
+        # Create OwnersProfile for KYC tracking
         owners_profile = OwnersProfile(
             user_id=new_user.id,
             approval_status=KycStatus.pending,
         )
         db.add(owners_profile)
-    elif user_data.role == AppRoleEnum.admin:
-        # Admin role cannot be self-assigned
-        role_to_assign = AppRole.customer
     
     user_role = UserRole(
         user_id=new_user.id,
         role=role_to_assign,
     )
     db.add(user_role)
+    
+    # Delete the verification record
+    db.delete(verification)
     
     db.commit()
     db.refresh(new_user)
@@ -101,6 +161,31 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
         role=AppRoleEnum(role_to_assign.value),
         token=Token(access_token=access_token),
     )
+
+
+class ResendOTPRequest(PydanticModel):
+    email: str
+
+
+@router.post("/resend-otp")
+async def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
+    """Resend verification OTP to email."""
+    from app.services.email_verification_service import EmailVerificationService
+    from app.models import EmailVerification
+    
+    success, error = EmailVerificationService.resend_otp(db, data.email)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error
+        )
+    
+    return {
+        "message": "New verification OTP sent to your email",
+        "email": data.email.lower().strip(),
+        "expires_in_minutes": EmailVerification.OTP_EXPIRY_MINUTES
+    }
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -169,13 +254,9 @@ async def login_json(login_data: UserLogin, db: Session = Depends(get_db)):
     # Get role from database
     role = get_user_role(user, db)
     
-    # Log for debugging
-    print(f"[LOGIN] User: {user.email}, Role from DB: {role}")
-    
     if not role:
         # Default to customer if no role found
         role = "customer"
-        print(f"[LOGIN] No role found, defaulting to: {role}")
     
     # Create access token
     access_token = create_access_token(
@@ -214,14 +295,12 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
     
     # Always return success to prevent email enumeration
     if user:
-        # TODO: Generate reset token and send email
-        # For now, just log it
+        # Generate reset token for password reset
         reset_token = create_access_token(
             data={"sub": str(user.id), "type": "password_reset"},
             expires_delta=timedelta(hours=1)
         )
-        # In production, send this token via email
-        print(f"Password reset token for {user.email}: {reset_token}")
+        # TODO: Send reset token via email in production
     
     return {"message": "If the email exists, a password reset link has been sent"}
 

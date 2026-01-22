@@ -45,7 +45,6 @@ async def list_favorites(
         
         return result
     except Exception as e:
-        print(f"Error in list_favorites: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

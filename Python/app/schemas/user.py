@@ -18,11 +18,13 @@ class KycStatusEnum(str, Enum):
     rejected = "rejected"
 
 
+
 # Auth Schemas
 class UserSignUp(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     name: str = Field(..., min_length=2)
+    phone: str = Field(..., min_length=10, max_length=15, description="Phone number with country code")
     role: AppRoleEnum = AppRoleEnum.customer
 
 
@@ -214,3 +216,21 @@ class AuthResponse(BaseModel):
     profile: Optional[ProfileResponse] = None
     role: Optional[AppRoleEnum] = None
     token: Token
+
+
+# Notification Status (for profile update response)
+class NotificationStatus(BaseModel):
+    """Status of confirmation notifications sent after profile update."""
+    email_confirmation_sent: Optional[bool] = None
+    email_confirmation_error: Optional[str] = None
+    sms_confirmation_sent: Optional[bool] = None
+    sms_confirmation_error: Optional[str] = None
+    email_already_confirmed: Optional[bool] = None
+    sms_already_confirmed: Optional[bool] = None
+
+
+class ProfileUpdateResponse(BaseModel):
+    """Response for profile update including notification status."""
+    profile: ProfileResponse
+    notification_status: Optional[NotificationStatus] = None
+    message: str = "Profile updated successfully"

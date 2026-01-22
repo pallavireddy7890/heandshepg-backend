@@ -18,6 +18,22 @@ class Settings(BaseSettings):
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     
+    # Email (SMTP/SendGrid)
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@heandshepg.com"
+    smtp_from_name: str = "He&She PG"
+    
+    # SMS (Twilio)
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    
+    # Notification Settings
+    notification_rate_limit_hours: int = 24  # Don't send duplicate confirmations within this period
+    
     # Debug
     debug: bool = True
     

@@ -20,6 +20,7 @@ from app.routers import (
     roommates_router,
     referrals_router,
     payments_router,
+    wallet_router,
 )
 from app.routers.websocket import router as websocket_router
 from app.routers.cities import router as cities_router
@@ -82,6 +83,7 @@ app.include_router(owner_router, prefix="/api")
 app.include_router(roommates_router, prefix="/api")
 app.include_router(referrals_router, prefix="/api")
 app.include_router(payments_router, prefix="/api")
+app.include_router(wallet_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
 app.include_router(cities_router, prefix="/api")
 

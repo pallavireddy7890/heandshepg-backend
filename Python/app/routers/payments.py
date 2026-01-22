@@ -78,7 +78,7 @@ async def create_payment_order(
         order_data = {
             "amount": amount_paise,
             "currency": "INR",
-            "receipt": f"booking_{request.booking_id}",
+            "receipt": f"b_{str(request.booking_id)[-24:]}",  # Max 40 chars for Razorpay
             "notes": {
                 "booking_id": request.booking_id,
                 "user_id": str(current_user.id),

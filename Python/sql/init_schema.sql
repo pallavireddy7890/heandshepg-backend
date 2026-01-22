@@ -394,6 +394,85 @@ CREATE TABLE IF NOT EXISTS system_settings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- ========== WALLET SYSTEM TABLES ==========
+
+-- Create wallet enum types
+DO $$ BEGIN
+    CREATE TYPE transaction_type AS ENUM ('credit', 'debit', 'hold', 'release');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE transaction_status AS ENUM ('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Wallets table
+CREATE TABLE IF NOT EXISTS wallets (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
+    balance INTEGER DEFAULT 0,
+    pending_balance INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Wallet transactions table
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    wallet_id UUID REFERENCES wallets(id) ON DELETE CASCADE NOT NULL,
+    booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
+    payer_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    receiver_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    amount INTEGER NOT NULL,
+    transaction_type transaction_type NOT NULL,
+    status transaction_status DEFAULT 'pending',
+    otp_verified BOOLEAN DEFAULT FALSE,
+    otp_verified_at TIMESTAMP WITH TIME ZONE,
+    razorpay_payment_id VARCHAR(255),
+    razorpay_order_id VARCHAR(255),
+    description TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Transaction OTPs table
+CREATE TABLE IF NOT EXISTS transaction_otps (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    transaction_id UUID REFERENCES wallet_transactions(id) ON DELETE CASCADE NOT NULL,
+    otp_code VARCHAR(6) NOT NULL,
+    otp_type VARCHAR(20) NOT NULL,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    is_verified BOOLEAN DEFAULT FALSE,
+    attempts INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 3,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    verified_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ==========================================
+-- Admin indexes (tables defined above)
+-- ==========================================
+
+-- Create admin indexes
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key);
+
+-- Create wallet indexes
+CREATE INDEX IF NOT EXISTS idx_wallets_user ON wallets(user_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_transactions_wallet ON wallet_transactions(wallet_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_transactions_booking ON wallet_transactions(booking_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_transactions_status ON wallet_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_wallet_transactions_receiver ON wallet_transactions(receiver_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_transactions_payer ON wallet_transactions(payer_id);
+CREATE INDEX IF NOT EXISTS idx_transaction_otps_transaction ON transaction_otps(transaction_id);
+
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_properties_city ON properties(city);
 CREATE INDEX IF NOT EXISTS idx_properties_owner ON properties(owner_id);
@@ -409,9 +488,13 @@ CREATE INDEX IF NOT EXISTS idx_reviews_property ON reviews(property_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
 
 -- Insert default system settings
-INSERT INTO system_settings (key, value) VALUES
-    ('commission_percentage', '{"value": 5}'::jsonb),
-    ('default_cancellation_policy', '{"value": "Free cancellation up to 7 days before check-in. 50% refund for cancellations within 7 days."}'::jsonb)
+INSERT INTO system_settings (key, value, description) VALUES
+    ('commission_percentage', '10', 'Percentage commission taken from each booking'),
+    ('platform_fee', '100', 'Fixed platform fee per booking in INR'),
+    ('minimum_booking_days', '30', 'Minimum number of days for a booking'),
+    ('cancellation_policy_hours', '24', 'Hours before check-in for free cancellation'),
+    ('referral_reward', '500', 'Reward amount for successful referrals in INR'),
+    ('max_properties_per_owner', '10', 'Maximum properties an owner can list')
 ON CONFLICT (key) DO NOTHING;
 
 -- Create updated_at trigger function
@@ -422,6 +505,19 @@ BEGIN
     RETURN NEW;
 END;
 $$ language 'plpgsql';
+
+-- Notification logs table (for rate limiting and tracking)
+CREATE TABLE IF NOT EXISTS notification_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    notification_type VARCHAR(50) NOT NULL,  -- 'email_confirmation', 'sms_confirmation', 'payment_reminder'
+    status VARCHAR(20) NOT NULL,  -- 'sent', 'failed'
+    error_message TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_logs_user_type ON notification_logs(user_id, notification_type);
+CREATE INDEX IF NOT EXISTS idx_notification_logs_created ON notification_logs(created_at);
 
 -- Apply triggers
 DROP TRIGGER IF EXISTS update_users_updated_at ON users;

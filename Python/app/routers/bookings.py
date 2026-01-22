@@ -16,6 +16,7 @@ from app.schemas import (
     BookingDetailResponse,
 )
 from app.utils.security import get_current_user, require_role
+from app.utils.notifications import notify_booking_created, notify_booking_accepted, notify_booking_rejected
 
 require_admin = require_role("admin")
 
@@ -136,7 +137,6 @@ async def list_bookings(
         
         return result
     except Exception as e:
-        print(f"Error in list_bookings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -211,6 +211,26 @@ async def create_booking(
             detail="You cannot book your own property"
         )
     
+    # Check for existing active/pending booking for this property by this customer
+    existing_booking = db.query(Booking).filter(
+        Booking.property_id == booking_data.property_id,
+        Booking.customer_id == current_user.id,
+        Booking.status.in_(['requested', 'accepted', 'paid', 'active', 'checked-in'])
+    ).first()
+    
+    if existing_booking:
+        status_text = existing_booking.status
+        if status_text == 'requested':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You already have a pending booking request for this property"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"You already have an active booking for this property (status: {status_text})"
+            )
+    
     # Check room if provided
     room = None
     if booking_data.room_id:
@@ -244,6 +264,15 @@ async def create_booking(
     db.add(new_booking)
     db.commit()
     db.refresh(new_booking)
+    
+    # Notify owner about new booking request
+    try:
+        customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+        customer_name = customer_profile.name if customer_profile else current_user.email
+        notify_booking_created(db, property.owner_id, customer_name, property.title, new_booking.id)
+    except Exception:
+        pass  # Don't fail booking if notification fails
+    
     return new_booking
 
 
@@ -287,6 +316,19 @@ async def update_booking_status(
     booking.status = new_status
     db.commit()
     db.refresh(booking)
+    
+    # Send notification to customer based on status change
+    try:
+        property = db.query(Property).filter(Property.id == booking.property_id).first()
+        property_title = property.title if property else "Property"
+        
+        if new_status == "accepted":
+            notify_booking_accepted(db, booking.customer_id, property_title, booking.id)
+        elif new_status in ["cancelled", "rejected"]:
+            notify_booking_rejected(db, booking.customer_id, property_title)
+    except Exception:
+        pass  # Don't fail status update if notification fails
+    
     return booking
 
 

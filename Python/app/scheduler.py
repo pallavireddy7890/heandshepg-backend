@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from app.database import SessionLocal
-from app.models import Booking, Payment, User, Profile, Property
+from app.models import Booking, Payment, User, Profile, Property, Notification
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ def get_db():
 
 
 def check_rent_due_dates():
-    """Check for upcoming rent due dates and create reminders."""
+    """Check for upcoming rent due dates and create reminders for tenants."""
     logger.info("Running rent due date check...")
     
     db = SessionLocal()
@@ -47,14 +48,42 @@ def check_rent_due_dates():
                 days_until_due = (end_date - today).days
                 
                 if 0 <= days_until_due <= 7:
-                    # Create reminder notification (in production, send email/push notification)
-                    logger.info(f"Rent reminder: Booking {booking.id} due in {days_until_due} days")
-                    reminders_created += 1
+                    # Check if owner has payment reminders enabled
+                    owner_profile = db.query(Profile).filter(Profile.user_id == booking.owner_id).first()
+                    
+                    if owner_profile and owner_profile.payment_reminders_enabled:
+                        # Get property info
+                        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+                        property_title = property_obj.title if property_obj else "your PG"
+                        
+                        # Check if we already sent a reminder today for this booking
+                        existing_reminder = db.query(Notification).filter(
+                            Notification.user_id == booking.customer_id,
+                            Notification.type == "payment_reminder",
+                            Notification.created_at >= datetime.utcnow().replace(hour=0, minute=0, second=0)
+                        ).first()
+                        
+                        if not existing_reminder:
+                            # Create notification for tenant
+                            notification = Notification(
+                                id=uuid.uuid4(),
+                                user_id=booking.customer_id,
+                                title="Rent Payment Reminder",
+                                message=f"Your rent for {property_title} is due in {days_until_due} days. Amount: ₹{booking.amount:,.0f}",
+                                type="payment_reminder",
+                                link="/bookings",
+                                read=False
+                            )
+                            db.add(notification)
+                            logger.info(f"Rent reminder created: Booking {booking.id} due in {days_until_due} days")
+                            reminders_created += 1
         
+        db.commit()
         logger.info(f"Created {reminders_created} rent reminders")
         
     except Exception as e:
         logger.error(f"Error in rent due date check: {e}")
+        db.rollback()
     finally:
         db.close()
 
