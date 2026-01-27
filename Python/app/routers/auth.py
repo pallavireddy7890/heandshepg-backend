@@ -1,4 +1,5 @@
 """Authentication router."""
+import re
 from datetime import timedelta
 from typing import Optional
 from uuid import UUID
@@ -227,14 +228,43 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 
 @router.post("/login/json", response_model=AuthResponse)
 async def login_json(login_data: UserLogin, db: Session = Depends(get_db)):
-    """Login with JSON body (alternative to form data)."""
-    user = db.query(User).filter(User.email == login_data.email).first()
+    """Login with email or phone number."""
     
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found with this email",
-        )
+    identifier = login_data.identifier.strip()
+    user = None
+    
+    # Check if identifier looks like an email
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    is_email = re.match(email_pattern, identifier)
+    
+    if is_email:
+        # Login by email
+        user = db.query(User).filter(User.email == identifier.lower()).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found with this email",
+            )
+    else:
+        # Login by phone number - look up through profile
+        # Clean phone number (remove spaces, keep + and digits)
+        phone_clean = ''.join(c for c in identifier if c.isdigit() or c == '+')
+        
+        # Try to find profile with this phone number
+        profile = db.query(Profile).filter(Profile.phone == phone_clean).first()
+        if not profile:
+            # Try without country code variations
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found with this phone number",
+            )
+        
+        user = db.query(User).filter(User.id == profile.user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account not found",
+            )
     
     if not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
@@ -291,6 +321,9 @@ async def get_current_user_info(
 @router.post("/forgot-password")
 async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
     """Send password reset email."""
+    from app.services.notification_service import NotificationService
+    from app.config import settings
+    
     user = db.query(User).filter(User.email == data.email).first()
     
     # Always return success to prevent email enumeration
@@ -300,7 +333,58 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
             data={"sub": str(user.id), "type": "password_reset"},
             expires_delta=timedelta(hours=1)
         )
-        # TODO: Send reset token via email in production
+        
+        # Build reset URL - frontend will handle #type=recovery
+        frontend_url = settings.frontend_url or "http://localhost:8080"
+        reset_url = f"{frontend_url}/auth#type=recovery&token={reset_token}"
+        
+        # Send password reset email
+        email_subject = "Reset Your He&She PG Password"
+        email_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #f59e0b, #eab308); padding: 20px; border-radius: 10px 10px 0 0;">
+                <h1 style="color: white; margin: 0;">He&She PG</h1>
+            </div>
+            <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px;">
+                <h2 style="color: #374151;">Password Reset Request</h2>
+                <p style="color: #6b7280; font-size: 16px;">
+                    We received a request to reset your password. Click the button below to create a new password:
+                </p>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{reset_url}" 
+                       style="background: #f59e0b; color: white; padding: 15px 30px; 
+                              text-decoration: none; border-radius: 8px; font-weight: bold;
+                              display: inline-block;">
+                        Reset Password
+                    </a>
+                </div>
+                <p style="color: #9ca3af; font-size: 14px;">
+                    This link will expire in 1 hour.
+                </p>
+                <p style="color: #9ca3af; font-size: 14px;">
+                    If you didn't request this, please ignore this email. Your password will remain unchanged.
+                </p>
+                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
+                <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+                    © 2024 He&She PG. All rights reserved.
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Send the email
+        email_sent = NotificationService.send_email(
+            to_email=data.email,
+            subject=email_subject,
+            html_content=email_body
+        )
+        
+        if not email_sent:
+            # Log the failure but don't expose to user
+            import logging
+            logging.warning(f"Failed to send password reset email to {data.email}")
     
     return {"message": "If the email exists, a password reset link has been sent"}
 

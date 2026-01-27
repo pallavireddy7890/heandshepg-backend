@@ -214,8 +214,9 @@ async def verify_razorpay_payment(
     db: Session = Depends(get_db),
 ):
     """
-    Verify Razorpay payment and send OTP to both parties.
+    Verify Razorpay payment and generate OTP for owner verification.
     Called after user completes Razorpay payment.
+    The OTP is displayed on the website for the customer to share with the owner.
     """
     import hashlib
     import hmac
@@ -252,47 +253,30 @@ async def verify_razorpay_payment(
     transaction.razorpay_payment_id = request.razorpay_payment_id
     db.commit()
     
-    # Get phone numbers for OTP
+    # Get profile info
     customer_profile = db.query(Profile).filter(Profile.user_id == transaction.payer_id).first()
     owner_profile = db.query(Profile).filter(Profile.user_id == transaction.receiver_id).first()
     
-    otp_results = {}
-    owner_otp_code = None
+    # Generate OTP for owner verification - NO SMS required
+    # OTP will be displayed on website for customer to share with owner
+    success, otp_code = WalletService.create_otp_for_display(
+        db=db,
+        transaction_id=transaction.id,
+        user_id=transaction.receiver_id,  # OTP is for owner to verify
+        otp_type="owner"
+    )
     
-    # Send OTP to customer (optional verification)
-    if customer_profile and customer_profile.phone:
-        success, otp = WalletService.create_and_send_otp(
-            db=db,
-            transaction_id=transaction.id,
-            user_id=transaction.payer_id,
-            otp_type="customer",
-            phone_number=customer_profile.phone
-        )
-        otp_results["customer_otp_sent"] = success
-    
-    # Send OTP to owner (required for verification)
-    if owner_profile and owner_profile.phone:
-        success, otp = WalletService.create_and_send_otp(
-            db=db,
-            transaction_id=transaction.id,
-            user_id=transaction.receiver_id,
-            otp_type="owner",
-            phone_number=owner_profile.phone
-        )
-        otp_results["owner_otp_sent"] = success
-        # Always return the owner OTP for in-site display
-        owner_otp_code = otp
-    else:
+    if not success:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Owner phone number not found. Cannot send OTP."
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate OTP"
         )
     
     # Get owner name for display
     owner_name = owner_profile.name if owner_profile else "Property Owner"
     customer_name = customer_profile.name if customer_profile else "Customer"
     
-    # Notify owner about incoming payment
+    # Notify owner about incoming payment (optional - won't fail if notification fails)
     try:
         notify_payment_received(db, transaction.receiver_id, transaction.amount / 100, customer_name)
     except Exception:
@@ -300,13 +284,13 @@ async def verify_razorpay_payment(
     
     return {
         "success": True,
-        "message": "Payment verified! Please share the OTP with the property owner to complete the transaction.",
+        "message": "Payment successful! Share the OTP below with the property owner to complete the transaction.",
         "transaction_id": str(transaction.id),
         "requires_owner_verification": True,
-        "owner_otp": owner_otp_code,  # OTP to display on website for customer to share with owner
+        "otp": otp_code,  # OTP displayed on website for customer to share with owner
         "owner_name": owner_name,
         "amount": transaction.amount / 100,  # Amount in INR
-        **otp_results
+        "expires_in_minutes": WalletService.OTP_EXPIRY_MINUTES
     }
 
 
@@ -416,17 +400,15 @@ async def resend_transaction_otp(
             detail="Transaction already completed"
         )
     
-    # Get owner profile for phone
+    # Get owner profile
     owner_profile = db.query(Profile).filter(Profile.user_id == transaction.receiver_id).first()
-    owner_phone = owner_profile.phone if owner_profile else None
     
-    # Create new OTP for owner verification
-    success, otp_code = WalletService.create_and_send_otp(
+    # Create new OTP for owner verification (no SMS needed - displayed on website)
+    success, otp_code = WalletService.create_otp_for_display(
         db=db,
         transaction_id=transaction.id,
         user_id=transaction.receiver_id,  # OTP is for owner to verify
-        otp_type="owner",
-        phone_number=owner_phone
+        otp_type="owner"
     )
     
     # Get owner name for display
@@ -435,7 +417,7 @@ async def resend_transaction_otp(
     return {
         "success": success,
         "message": "New OTP generated! Share this with the property owner.",
-        "otp": otp_code,  # Return OTP for customer to display
+        "otp": otp_code,  # OTP displayed on website for customer to share
         "owner_name": owner_name,
         "amount": transaction.amount / 100,
         "expires_in_minutes": WalletService.OTP_EXPIRY_MINUTES

@@ -71,6 +71,7 @@ class EmailVerificationService:
         
         # Generate OTP and hash password
         otp_code = EmailVerificationService.generate_otp()
+        logger.info(f"Generated OTP for {email_lower}: '{otp_code}'")
         hashed_password = get_password_hash(password)
         
         # Map role string to AppRole enum
@@ -93,6 +94,8 @@ class EmailVerificationService:
         db.add(verification)
         db.commit()
         db.refresh(verification)
+        
+        logger.info(f"Stored verification record - email: {email_lower}, OTP in record: '{verification.otp_code}'")
         
         # Send OTP email
         success, email_error = EmailVerificationService.send_otp_email(
@@ -182,6 +185,10 @@ If you didn't request this verification, please ignore this email.
             Tuple of (verification: Optional[EmailVerification], error: Optional[str])
         """
         email_lower = email.lower().strip()
+        # Clean the OTP code - strip whitespace and ensure string format
+        otp_code_clean = str(otp_code).strip() if otp_code else ""
+        
+        logger.info(f"Verifying OTP for email: {email_lower}, OTP received: '{otp_code_clean}'")
         
         # Find the verification record
         verification = db.query(EmailVerification).filter(
@@ -190,20 +197,29 @@ If you didn't request this verification, please ignore this email.
         ).first()
         
         if not verification:
+            logger.warning(f"No pending verification found for email: {email_lower}")
             return None, "No pending verification found. Please sign up again."
+        
+        logger.info(f"Found verification record - stored OTP: '{verification.otp_code}', attempts: {verification.attempts}")
         
         # Check if expired
         if verification.is_expired():
+            logger.warning(f"OTP expired for email: {email_lower}")
             db.delete(verification)
             db.commit()
             return None, "OTP has expired. Please request a new one."
         
         # Check if max attempts exceeded
         if verification.has_max_attempts():
+            logger.warning(f"Max attempts reached for email: {email_lower}")
             return None, "Too many failed attempts. Please request a new OTP."
         
-        # Verify OTP
-        if verification.otp_code != otp_code:
+        # Clean the stored OTP for comparison
+        stored_otp_clean = str(verification.otp_code).strip() if verification.otp_code else ""
+        
+        # Verify OTP - compare cleaned versions
+        if stored_otp_clean != otp_code_clean:
+            logger.warning(f"OTP mismatch for email: {email_lower} - stored: '{stored_otp_clean}' vs received: '{otp_code_clean}'")
             verification.increment_attempts()
             db.commit()
             remaining = EmailVerification.MAX_ATTEMPTS - verification.attempts
@@ -211,6 +227,8 @@ If you didn't request this verification, please ignore this email.
                 return None, f"Invalid OTP. {remaining} attempts remaining."
             else:
                 return None, "Too many failed attempts. Please request a new OTP."
+        
+        logger.info(f"OTP verified successfully for email: {email_lower}")
         
         # Mark as verified
         verification.is_verified = True

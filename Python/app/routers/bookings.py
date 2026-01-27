@@ -215,7 +215,7 @@ async def create_booking(
     existing_booking = db.query(Booking).filter(
         Booking.property_id == booking_data.property_id,
         Booking.customer_id == current_user.id,
-        Booking.status.in_(['requested', 'accepted', 'paid', 'active', 'checked-in'])
+        Booking.status.in_(['requested', 'accepted', 'paid', 'active', 'checked_in'])
     ).first()
     
     if existing_booking:
@@ -364,3 +364,70 @@ async def cancel_booking(
     db.commit()
     db.refresh(booking)
     return booking
+
+
+@router.post("/{booking_id}/vacate")
+async def request_vacate(
+    booking_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Request to vacate a paid/active booking.
+    Only the tenant (customer) can request to vacate.
+    This notifies the owner about the vacate request.
+    """
+    booking = db.query(Booking).filter(
+        Booking.id == booking_id,
+        Booking.customer_id == current_user.id
+    ).first()
+    
+    if not booking:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Booking not found"
+        )
+    
+    # Can only vacate a paid or active booking
+    if booking.status not in ["paid", "active", "checked_in"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot request vacate for booking with status: {booking.status}. Only paid/active bookings can be vacated."
+        )
+    
+    # Update booking status
+    booking.status = "vacate_requested"
+    db.commit()
+    db.refresh(booking)
+    
+    # Get property and customer details for notification
+    property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+    customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    
+    property_title = property_obj.title if property_obj else "Property"
+    customer_name = customer_profile.name if customer_profile else current_user.email
+    
+    # Notify owner about vacate request
+    try:
+        from app.utils.notifications import create_notification
+        create_notification(
+            db=db,
+            user_id=booking.owner_id,
+            title="Vacate Request",
+            message=f"{customer_name} has requested to vacate from {property_title}. Please review and process their checkout.",
+            notification_type="vacate_request",
+            reference_id=str(booking.id),
+            reference_type="booking"
+        )
+    except Exception as e:
+        # Log but don't fail the vacate request
+        import logging
+        logging.warning(f"Failed to send vacate notification: {e}")
+    
+    return {
+        "success": True,
+        "message": "Vacate request submitted successfully. The property owner has been notified.",
+        "booking_id": str(booking.id),
+        "status": "vacate_requested"
+    }
+

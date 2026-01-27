@@ -140,6 +140,52 @@ class WalletService:
         return True, otp_code
     
     @staticmethod
+    def create_otp_for_display(
+        db: Session,
+        transaction_id: UUID,
+        user_id: UUID,
+        otp_type: str,  # 'customer' or 'owner'
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Create OTP for in-website display (no SMS required).
+        This is used when the customer makes a payment and needs to share the OTP
+        with the owner in person or via any communication method.
+        """
+        from datetime import timezone
+        otp_code = WalletService.generate_otp()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=WalletService.OTP_EXPIRY_MINUTES)
+        
+        # Delete any existing unverified OTPs for this transaction and type
+        db.query(TransactionOTP).filter(
+            TransactionOTP.transaction_id == transaction_id,
+            TransactionOTP.otp_type == otp_type,
+            TransactionOTP.is_verified == False
+        ).delete()
+        
+        # Create OTP record
+        otp = TransactionOTP(
+            transaction_id=transaction_id,
+            otp_code=otp_code,
+            otp_type=otp_type,
+            user_id=user_id,
+            expires_at=expires_at,
+        )
+        db.add(otp)
+        
+        # Get transaction and update status
+        transaction = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
+        if transaction:
+            transaction.status = TransactionStatus.otp_sent
+        
+        db.commit()
+        
+        # Get amount for logging
+        amount_inr = transaction.amount / 100 if transaction else 0
+        logger.info(f"Generated OTP for display - Transaction: {transaction_id}, Type: {otp_type}, Amount: Rs.{amount_inr:.2f}, OTP: {otp_code}")
+        
+        return True, otp_code
+    
+    @staticmethod
     def verify_otp(
         db: Session,
         transaction_id: UUID,

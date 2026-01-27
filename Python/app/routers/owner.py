@@ -72,6 +72,43 @@ class FinancialSummary(BaseModel):
     monthly_revenue: float
 
 
+# ========== Owner Properties ==========
+
+@router.get("/properties", dependencies=[Depends(require_owner)])
+async def get_owner_properties(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get all properties owned by the current user."""
+    try:
+        properties = db.query(Property).filter(
+            Property.owner_id == current_user.id
+        ).order_by(Property.created_at.desc()).all()
+        
+        result = []
+        for prop in properties:
+            result.append({
+                "id": str(prop.id),
+                "title": prop.title,
+                "description": prop.description,
+                "address": prop.address,
+                "city": prop.city,
+                "locality": prop.locality,
+                "monthly_rent": prop.monthly_rent,
+                "deposit": prop.deposit,
+                "gender_preference": prop.gender_preference,
+                "amenities": prop.amenities or [],
+                "photos": prop.photos or [],
+                "status": prop.status,
+                "available_from": prop.available_from.isoformat() if prop.available_from else None,
+                "created_at": prop.created_at.isoformat() if prop.created_at else None,
+            })
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ========== Financial Tracking ==========
 
 @router.get("/payments", dependencies=[Depends(require_owner)])

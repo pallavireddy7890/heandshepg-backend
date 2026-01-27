@@ -32,9 +32,10 @@ def check_rent_due_dates():
         today = datetime.utcnow().date()
         week_from_now = today + timedelta(days=7)
         
-        # Get all active bookings
+        # Get all active bookings ending today or earlier
         active_bookings = db.query(Booking).filter(
-            Booking.status.in_(['active', 'checked-in', 'paid'])
+            Booking.end_date <= today,
+            Booking.status.in_(['active', 'checked_in', 'paid'])
         ).all()
         
         reminders_created = 0

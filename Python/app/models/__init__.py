@@ -10,6 +10,7 @@ from app.models.city import City, Area
 from app.models.notification_log import NotificationLog
 from app.models.wallet import Wallet, WalletTransaction, TransactionOTP, TransactionType, TransactionStatus
 from app.models.email_verification import EmailVerification
+from app.models.announcement import Announcement, AnnouncementPriority
 
 
 __all__ = [
@@ -60,6 +61,10 @@ __all__ = [
     "TransactionStatus",
     # Email verification
     "EmailVerification",
+    # Announcements
+    "Announcement",
+    "AnnouncementPriority",
 ]
+
 
 
