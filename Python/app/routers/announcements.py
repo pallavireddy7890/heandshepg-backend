@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from datetime import datetime, timedelta
 
 from app.database import get_db
 from app.models import User, Announcement, AnnouncementPriority, Property, Booking, Profile
@@ -21,6 +22,8 @@ class AnnouncementCreate(BaseModel):
     title: str = Field(..., min_length=5, max_length=200)
     message: str = Field(..., min_length=10)
     priority: str = Field(default="normal")  # normal, important, urgent
+    start_time: Optional[str] = None  # ISO format, defaults to now
+    end_time: Optional[str] = None  # ISO format, defaults to 24h from start
 
 
 class AnnouncementResponse(BaseModel):
@@ -30,6 +33,8 @@ class AnnouncementResponse(BaseModel):
     title: str
     message: str
     priority: str
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     is_active: bool
     created_at: str
     property_title: Optional[str] = None
@@ -70,6 +75,10 @@ async def create_announcement(
                 detail="Property not found or you don't own it"
             )
     
+    # Parse start_time and end_time, with defaults
+    start_time = datetime.fromisoformat(data.start_time.replace('Z', '+00:00')) if data.start_time else datetime.utcnow()
+    end_time = datetime.fromisoformat(data.end_time.replace('Z', '+00:00')) if data.end_time else (start_time + timedelta(hours=24))
+    
     # Create the announcement
     announcement = Announcement(
         owner_id=current_user.id,
@@ -77,6 +86,8 @@ async def create_announcement(
         title=data.title,
         message=data.message,
         priority=data.priority,
+        start_time=start_time,
+        end_time=end_time,
         is_active=True
     )
     db.add(announcement)
@@ -207,6 +218,8 @@ async def get_owner_announcements(
             title=ann.title,
             message=ann.message,
             priority=ann.priority,
+            start_time=ann.start_time.isoformat() if ann.start_time else None,
+            end_time=ann.end_time.isoformat() if ann.end_time else None,
             is_active=ann.is_active,
             created_at=ann.created_at.isoformat(),
             property_title=property_title
@@ -256,6 +269,8 @@ async def get_tenant_announcements(
             title=ann.title,
             message=ann.message,
             priority=ann.priority,
+            start_time=ann.start_time.isoformat() if ann.start_time else None,
+            end_time=ann.end_time.isoformat() if ann.end_time else None,
             is_active=ann.is_active,
             created_at=ann.created_at.isoformat(),
             property_title=property_title

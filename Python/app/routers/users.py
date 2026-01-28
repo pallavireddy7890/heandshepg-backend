@@ -71,6 +71,38 @@ async def update_profile(
     for field, value in update_data.items():
         setattr(profile, field, value)
     
+    # Auto-verification logic for customer profiles
+    # Check if user is a customer (not owner/admin) and has all required fields filled
+    from app.models import UserRole, AppRole
+    user_role = db.query(UserRole).filter(UserRole.user_id == current_user.id).first()
+    
+    if user_role and user_role.role == AppRole.customer:
+        # Helper function to check if a field has actual content (not empty/whitespace)
+        def is_filled(value):
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return len(value.strip()) > 0
+            return bool(value)
+        
+        # Required fields for customer verification
+        required_fields_filled = all([
+            is_filled(profile.name),
+            is_filled(profile.phone),
+            is_filled(profile.gender),
+            is_filled(profile.date_of_birth),
+            is_filled(profile.city),
+            is_filled(profile.aadhar_front_url),
+            is_filled(profile.aadhar_back_url),
+            is_filled(profile.college_company_id_url)
+        ])
+        
+        # Update verification status based on whether all fields are filled
+        if required_fields_filled:
+            profile.profile_verification_status = "verified"
+        else:
+            profile.profile_verification_status = "pending"
+    
     db.commit()
     db.refresh(profile)
     

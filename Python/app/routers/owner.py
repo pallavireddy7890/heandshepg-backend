@@ -111,6 +111,48 @@ async def get_owner_properties(
 
 # ========== Financial Tracking ==========
 
+@router.delete("/properties/{property_id}", dependencies=[Depends(require_owner)])
+async def delete_owner_property(
+    property_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a property owned by the current user."""
+    try:
+        # Get the property
+        property_obj = db.query(Property).filter(Property.id == property_id).first()
+        
+        if not property_obj:
+            raise HTTPException(status_code=404, detail="Property not found")
+        
+        # Verify ownership
+        if property_obj.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this property")
+        
+        # Check for active bookings
+        active_bookings = db.query(Booking).filter(
+            Booking.property_id == property_id,
+            Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
+        ).count()
+        
+        if active_bookings > 0:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Cannot delete property with {active_bookings} active booking(s). Please cancel or complete all bookings first."
+            )
+        
+        # Delete the property
+        db.delete(property_obj)
+        db.commit()
+        
+        return {"message": "Property deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/payments", dependencies=[Depends(require_owner)])
 async def get_owner_payments(
     current_user: User = Depends(get_current_user),
