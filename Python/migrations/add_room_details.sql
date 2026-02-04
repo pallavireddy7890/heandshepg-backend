@@ -1,0 +1,5 @@
+-- Add room details columns to rooms table
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS caption TEXT;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS area_sqft INTEGER;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS width_ft INTEGER;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS has_ventilation BOOLEAN DEFAULT TRUE;

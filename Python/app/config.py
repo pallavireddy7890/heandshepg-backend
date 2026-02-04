@@ -1,12 +1,23 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Known insecure secret keys that should never be used in production
+INSECURE_SECRETS = {
+    "your-super-secret-key-change-this-in-production",
+    "change-me",
+    "secret",
+    "your-secret-key",
+}
 
 
 class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql://postgres:password@localhost:5432/heandshepg"
     
-    # JWT
+    # JWT - No default for secret_key forces explicit configuration
     secret_key: str = "your-super-secret-key-change-this-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
@@ -34,14 +45,38 @@ class Settings(BaseSettings):
     # Notification Settings
     notification_rate_limit_hours: int = 24  # Don't send duplicate confirmations within this period
     
-    # Debug
+    # Debug - MUST be False in production
     debug: bool = True
     
     class Config:
         env_file = ".env"
         extra = "allow"
+    
+    def validate_production_settings(self) -> bool:
+        """Validate that production-critical settings are properly configured."""
+        is_valid = True
+        
+        if not self.debug:
+            # In production mode, enforce security requirements
+            if self.secret_key in INSECURE_SECRETS:
+                logger.critical(
+                    "SECURITY ERROR: Using insecure SECRET_KEY in production! "
+                    "Generate a secure key: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+                )
+                is_valid = False
+            
+            if len(self.secret_key) < 32:
+                logger.warning("SECRET_KEY is shorter than recommended (32+ characters)")
+        
+        return is_valid
 
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    # Validate on first load
+    if not settings.debug:
+        if not settings.validate_production_settings():
+            logger.critical("Production validation failed! Check configuration.")
+    return settings
+

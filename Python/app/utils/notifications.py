@@ -10,7 +10,9 @@ def create_notification(
     title: str,
     message: str,
     notification_type: str = "info",
-    link: str = None
+    link: str = None,
+    reference_id: str = None,
+    reference_type: str = None
 ) -> Notification:
     """
     Create a notification for a user.
@@ -20,8 +22,10 @@ def create_notification(
         user_id: UUID of the user to notify
         title: Notification title
         message: Notification message
-        notification_type: Type of notification (info, success, warning, booking, payment)
+        notification_type: Type of notification (info, success, warning, booking, payment, vacate_request)
         link: Optional link to navigate to when clicked
+        reference_id: Optional reference ID (e.g., booking_id)
+        reference_type: Optional reference type (e.g., "booking")
     
     Returns:
         Created notification object
@@ -32,13 +36,27 @@ def create_notification(
         title=title,
         message=message,
         type=notification_type,
-        link=link,
+        link=link or ("/owner/bookings" if reference_type == "booking" else None),
         read=False
     )
     db.add(notification)
     db.commit()
     db.refresh(notification)
     return notification
+
+
+def notify_vacate_request(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
+    """Notify owner when a tenant requests to vacate."""
+    return create_notification(
+        db=db,
+        user_id=owner_id,
+        title="🏠 Vacate Request",
+        message=f"{customer_name} has requested to vacate from {property_title}. Please review and process their checkout.",
+        notification_type="vacate_request",
+        link="/owner/bookings",
+        reference_id=str(booking_id),
+        reference_type="booking"
+    )
 
 
 def notify_booking_created(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
@@ -115,3 +133,38 @@ def notify_new_message(db: Session, user_id: uuid.UUID, sender_name: str, proper
         notification_type="message",
         link="/messages"
     )
+
+
+def get_admin_user_ids(db: Session) -> list:
+    """Get all admin user IDs for broadcasting notifications."""
+    from app.models import UserRole, AppRole
+    admin_roles = db.query(UserRole).filter(UserRole.role == AppRole.admin).all()
+    return [role.user_id for role in admin_roles]
+
+
+def notify_admins_owner_signup(db: Session, owner_name: str, owner_email: str):
+    """Notify all admins when a new owner signs up."""
+    admin_ids = get_admin_user_ids(db)
+    for admin_id in admin_ids:
+        create_notification(
+            db=db,
+            user_id=admin_id,
+            title="🏢 New Owner Registration",
+            message=f"New owner registered: {owner_name} ({owner_email}). Review their application in the admin dashboard.",
+            notification_type="info",
+            link="/admin"
+        )
+
+
+def notify_admins_payment_completed(db: Session, customer_name: str, owner_name: str, amount: float, property_title: str):
+    """Notify all admins when a payment is completed."""
+    admin_ids = get_admin_user_ids(db)
+    for admin_id in admin_ids:
+        create_notification(
+            db=db,
+            user_id=admin_id,
+            title="💰 Payment Completed",
+            message=f"{customer_name} paid ₹{amount:,.0f} to {owner_name} for {property_title}.",
+            notification_type="payment",
+            link="/admin/payments"
+        )

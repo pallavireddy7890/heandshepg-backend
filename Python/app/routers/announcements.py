@@ -171,7 +171,7 @@ async def create_announcement(
         NotificationService.send_email(
             to_email=email,
             subject=f"[{data.priority.upper()}] {data.title} - He&She PG",
-            html_content=email_body
+            body_html=email_body
         )
     
     return AnnouncementResponse(

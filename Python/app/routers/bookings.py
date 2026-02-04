@@ -1,22 +1,24 @@
 """Bookings router."""
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, Booking, Property, Room, Profile
+from app.models import User, Booking, Property, Room, Profile, RoomBed
 from app.schemas import (
     BookingCreate,
     BookingStatusUpdate,
     BookingCancelRequest,
     BookingResponse,
     BookingDetailResponse,
+    BookingExtend,
 )
 from app.utils.security import get_current_user, require_role
 from app.utils.notifications import notify_booking_created, notify_booking_accepted, notify_booking_rejected
+from app.services.vacancy import get_bed_vacancy, is_bed_available_for_extension
 
 require_admin = require_role("admin")
 
@@ -108,6 +110,11 @@ async def list_bookings(
             # Get property details
             property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
             
+            # Get room details
+            room_obj = None
+            if booking.room_id:
+                room_obj = db.query(Room).filter(Room.id == booking.room_id).first()
+            
             # Get customer name
             customer_name = None
             if booking.customer_id:
@@ -126,17 +133,32 @@ async def list_bookings(
                 "end_date": booking.end_date.isoformat() if booking.end_date else None,
                 "amount": booking.amount or 0,
                 "security_deposit": booking.security_deposit or 0,
+                "rent_paid": booking.rent_paid or False,
+                "deposit_paid": booking.deposit_paid or False,
+                "maintenance_charge": booking.maintenance_charge or 0,
+                "stay_type": booking.stay_type,
+                "duration_days": booking.duration_days,
                 "created_at": booking.created_at.isoformat() if booking.created_at else None,
                 "property": {
                     "title": property_obj.title if property_obj else None,
                     "city": property_obj.city if property_obj else None,
                     "locality": property_obj.locality if property_obj else None,
+                    "photos": property_obj.photos if property_obj else None,
                 } if property_obj else None,
+                "room": {
+                    "room_type": room_obj.room_type,
+                    "bed_count": room_obj.bed_count,
+                    "room_description": room_obj.room_description,
+                    "price": room_obj.price,
+                } if room_obj else None,
                 "customer_name": customer_name,
             })
         
         return result
     except Exception as e:
+        import traceback
+        print(f"ERROR in list_bookings: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -243,23 +265,102 @@ async def create_booking(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Room not found"
             )
-        if not room.is_available:
+        
+        # Calculate booking dates for vacancy check
+        booking_start = booking_data.start_date
+        if booking_data.stay_type == "daily":
+            if booking_data.duration_days:
+                duration_for_check = booking_data.duration_days
+            elif booking_data.end_date:
+                duration_for_check = (booking_data.end_date - booking_data.start_date).days
+                if duration_for_check <= 0:
+                    duration_for_check = 1
+            else:
+                duration_for_check = 1
+            booking_end = booking_start + timedelta(days=duration_for_check)
+        else:
+            # For monthly stays, check 30 days ahead
+            booking_end = booking_start + timedelta(days=30)
+        
+        # Dynamic vacancy check using date overlap
+        available_beds = get_bed_vacancy(db, room.id, booking_start, booking_end)
+        if available_beds <= 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Room is not available"
+                detail=f"No beds available in {room.room_type} for the selected dates"
             )
     
-    # Create booking
+    # Calculate amount and deposit based on stay_type
+    is_daily = booking_data.stay_type == "daily"
+    amount = 0
+    security_deposit = 0
+    duration = None
+    
+    if is_daily:
+        if not room:
+            raise HTTPException(status_code=400, detail="Room selection is required for daily stay")
+        
+        if room.daily_price is None:
+             raise HTTPException(status_code=400, detail="Daily stay is not available for this room")
+
+        # Calculate duration
+        if booking_data.duration_days:
+            duration = booking_data.duration_days
+        elif booking_data.end_date:
+            duration = (booking_data.end_date - booking_data.start_date).days
+            if duration <= 0: duration = 1
+        else:
+            duration = 1
+            
+        amount = (room.daily_price or room.price) * duration
+        security_deposit = 0
+    else:
+        if room.monthly_price is None and room.price is None:
+             raise HTTPException(status_code=400, detail="Monthly stay is not available for this room")
+             
+        # For monthly, use room price if available, else property default
+        amount = (room.monthly_price if room and room.monthly_price else (room.price if room else property.monthly_rent)) or 0
+        security_deposit = (room.security_deposit if room and room.security_deposit else (room.deposit if room else property.deposit)) or 0
+
+    # Pick a bed (Rule 16)
+    bed_id = booking_data.bed_id
+    if not bed_id and room:
+        # Simple auto-allocation: find first bed with status available
+        # Note: In a production system with date-based daily stays, we'd check bed-specific availability across dates.
+        # For now, we use the room-level vacancy check and just link to a physical bed.
+        available_bed = db.query(RoomBed).filter(
+            RoomBed.room_id == room.id,
+            RoomBed.status == "available"
+        ).first()
+        if available_bed:
+            bed_id = available_bed.id
+
+    # Get customer profile for snapshot
+    customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    customer_name = customer_profile.name if customer_profile else current_user.email
+    customer_phone = customer_profile.phone if customer_profile else None
+    
+    # Create booking with customer snapshot for data retention
     new_booking = Booking(
         property_id=property.id,
         room_id=booking_data.room_id,
+        bed_id=bed_id,
         customer_id=current_user.id,
         owner_id=property.owner_id,
         start_date=booking_data.start_date,
-        end_date=booking_data.end_date,
-        amount=property.monthly_rent,
-        security_deposit=property.deposit,
+        end_date=booking_data.end_date if is_daily else None,
+        stay_type=booking_data.stay_type or "monthly",
+        duration_days=duration,
+        amount=amount,
+        security_deposit=security_deposit,
+        maintenance_charge=0 if is_daily else (property.maintenance_charge or 0),
         status="requested",
+        # Snapshot of customer info - preserved even if customer deletes account
+        customer_snapshot={
+            "name": customer_name,
+            "email": current_user.email,
+            "phone": customer_phone
+        }
     )
     db.add(new_booking)
     db.commit()
@@ -267,8 +368,6 @@ async def create_booking(
     
     # Notify owner about new booking request
     try:
-        customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
-        customer_name = customer_profile.name if customer_profile else current_user.email
         notify_booking_created(db, property.owner_id, customer_name, property.title, new_booking.id)
     except Exception:
         pass  # Don't fail booking if notification fails
@@ -313,6 +412,23 @@ async def update_booking_status(
                 detail="Invalid status transition"
             )
     
+    # If the booking is being marked as completed (checkout), restore the vacancy
+    if new_status == "completed" and booking.status != "completed" and booking.room_id:
+        room = db.query(Room).filter(Room.id == booking.room_id).first()
+        if room:
+            if room.vacancy_count is not None:
+                room.vacancy_count += 1
+            else:
+                room.vacancy_count = 1
+            
+            # Ensure it's marked as available if it was previously full
+            room.is_available = True
+            
+            # Log vacancy update
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Vacancy replenished for room {room.id} after booking completed. New count: {room.vacancy_count}")
+
     booking.status = new_status
     db.commit()
     db.refresh(booking)
@@ -357,6 +473,23 @@ async def cancel_booking(
             detail="Booking cannot be cancelled"
         )
     
+    # If the booking was confirmed/paid/checked-in, we should restore the vacancy
+    if booking.status in ["paid", "checked_in", "active", "vacate_requested"] and booking.room_id:
+        room = db.query(Room).filter(Room.id == booking.room_id).first()
+        if room:
+            if room.vacancy_count is not None:
+                room.vacancy_count += 1
+            else:
+                room.vacancy_count = 1
+            
+            # Ensure it's marked as available if it was previously full
+            room.is_available = True
+            
+            # Log vacancy update
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Vacancy replenished for room {room.id} after cancellation. New count: {room.vacancy_count}")
+
     booking.status = "cancelled"
     booking.cancelled_at = datetime.utcnow()
     booking.cancel_reason = cancel_data.cancel_reason
@@ -431,3 +564,122 @@ async def request_vacate(
         "status": "vacate_requested"
     }
 
+
+@router.post("/{booking_id}/force-vacate")
+async def force_vacate(
+    booking_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Force vacate a tenant (Owner only).
+    Marks booking as 'vacated' and releases the bed.
+    """
+    booking = db.query(Booking).filter(
+        Booking.id == booking_id,
+        Booking.owner_id == current_user.id
+    ).first()
+    
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found or not authorized")
+    
+    # Release the bed
+    if booking.bed_id:
+        bed = db.query(RoomBed).filter(RoomBed.id == booking.bed_id).first()
+        if bed:
+            bed.status = "available"
+            bed.current_tenant_id = None
+            
+    # Update booking status
+    booking.status = "vacated"
+    booking.end_date = date.today()
+    
+    db.commit()
+    db.refresh(booking)
+    
+    return {"success": True, "message": "Tenant vacated successfully", "status": "vacated"}
+
+
+@router.post("/{booking_id}/convert-to-monthly")
+async def convert_to_monthly(
+    booking_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Convert a daily stay to a monthly stay."""
+    booking = db.query(Booking).filter(
+        Booking.id == booking_id,
+        Booking.customer_id == current_user.id,
+        Booking.stay_type == "daily"
+    ).first()
+    
+    if not booking:
+        raise HTTPException(status_code=404, detail="Active daily booking not found")
+        
+    room = db.query(Room).filter(Room.id == booking.room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+        
+    if room.monthly_price is None and room.price is None:
+        raise HTTPException(status_code=400, detail="Monthly stay not available for this room")
+        
+    booking.stay_type = "monthly"
+    booking.amount = room.monthly_price or room.price or 0
+    booking.security_deposit = room.security_deposit or room.deposit or 0
+    booking.end_date = None # Monthly is open-ended
+    
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+# --- Ticket System Moved to Maintenance Router ---
+
+
+@router.post("/{booking_id}/extend", response_model=BookingResponse)
+async def extend_booking(
+    booking_id: UUID,
+    extend_data: BookingExtend,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Extend a daily stay booking."""
+    booking = db.query(Booking).filter(
+        Booking.id == booking_id,
+        Booking.customer_id == current_user.id,
+        Booking.stay_type == "daily"
+    ).first()
+    
+    if not booking:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Active daily booking not found"
+        )
+    
+    room = db.query(Room).filter(Room.id == booking.room_id).first()
+    if not room:
+         raise HTTPException(status_code=404, detail="Room not found")
+
+    # Dynamic vacancy check for extension period
+    is_available, available_beds = is_bed_available_for_extension(
+        db, booking_id, extend_data.extra_days
+    )
+    if not is_available:
+         raise HTTPException(
+             status_code=400, 
+             detail="No vacancy available for the extension period"
+         )
+
+    # Update booking
+    extra_amount = (room.daily_price or room.price) * extend_data.extra_days
+    booking.amount += extra_amount
+    booking.duration_days += extend_data.extra_days
+    if booking.end_date:
+        booking.end_date = booking.end_date + timedelta(days=extend_data.extra_days)
+    else:
+        # If no end date, calculate from start_date + new duration
+        booking.end_date = booking.start_date + timedelta(days=booking.duration_days)
+    
+    db.commit()
+    db.refresh(booking)
+    return booking

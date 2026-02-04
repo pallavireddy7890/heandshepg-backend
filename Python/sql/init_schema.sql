@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS profiles (
     gst_doc_url TEXT,
     aadhar_front_url TEXT,
     aadhar_back_url TEXT,
+    dl_front_url TEXT,
+    dl_back_url TEXT,
     college_company_id_url TEXT,
     profile_verification_status VARCHAR(20) DEFAULT 'pending',
     -- Timestamps

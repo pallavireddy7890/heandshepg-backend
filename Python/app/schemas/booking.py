@@ -41,8 +41,11 @@ class InvoiceStatusEnum(str, Enum):
 class BookingCreate(BaseModel):
     property_id: UUID
     room_id: Optional[UUID] = None
+    bed_id: Optional[UUID] = None
     start_date: date
     end_date: Optional[date] = None
+    stay_type: Optional[str] = "monthly"
+    duration_days: Optional[int] = None
 
 
 class BookingStatusUpdate(BaseModel):
@@ -53,17 +56,28 @@ class BookingCancelRequest(BaseModel):
     cancel_reason: Optional[str] = None
 
 
+class BookingExtend(BaseModel):
+    extra_days: int = Field(..., gt=0)
+
+
 class BookingResponse(BaseModel):
     id: UUID
     property_id: UUID
     room_id: Optional[UUID]
+    bed_id: Optional[UUID] = None
     customer_id: UUID
     owner_id: UUID
     start_date: date
     end_date: Optional[date]
     status: str
+    stay_type: str
+    duration_days: Optional[int] = None
     amount: int
     security_deposit: int
+    maintenance_charge: int
+    rent_paid: bool = False
+    deposit_paid: bool = False
+    maintenance_paid: bool = False
     cancelled_at: Optional[datetime]
     cancel_reason: Optional[str]
     created_at: datetime

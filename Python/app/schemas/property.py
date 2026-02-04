@@ -12,19 +12,77 @@ class GenderPreferenceEnum(str, Enum):
     mixed = "mixed"
 
 
+
+# Room Schemas
+class RoomBase(BaseModel):
+    room_type: str
+    floor_number: Optional[int] = 1
+    room_number: Optional[str] = None
+    bed_count: int = Field(..., gt=0)
+    price: int = Field(..., ge=0)
+    deposit: Optional[int] = Field(None, ge=0)
+    security_deposit: Optional[int] = Field(None, ge=0)
+    monthly_price: Optional[int] = Field(None, ge=0)
+    daily_price: Optional[int] = Field(None, ge=0)
+    vacancy_count: Optional[int] = Field(0, ge=0)
+    is_available: Optional[bool] = True
+    stay_type: Optional[str] = "monthly"
+    min_stay: Optional[int] = 1
+    is_extension_allowed: Optional[bool] = True
+    complementaries: Optional[List[str]] = None
+    room_photos: Optional[List[str]] = None
+    room_description: Optional[str] = Field(None, max_length=700)
+
+
+class RoomCreate(RoomBase):
+    pass
+
+
+class RoomUpdate(BaseModel):
+    room_type: Optional[str] = None
+    floor_number: Optional[int] = None
+    room_number: Optional[str] = None
+    bed_count: Optional[int] = Field(None, gt=0)
+    price: Optional[int] = Field(None, ge=0)
+    deposit: Optional[int] = Field(None, ge=0)
+    security_deposit: Optional[int] = Field(None, ge=0)
+    monthly_price: Optional[int] = Field(None, ge=0)
+    daily_price: Optional[int] = Field(None, ge=0)
+    vacancy_count: Optional[int] = Field(None, ge=0)
+    is_available: Optional[bool] = None
+    stay_type: Optional[str] = None
+    min_stay: Optional[int] = None
+    is_extension_allowed: Optional[bool] = None
+    complementaries: Optional[List[str]] = None
+    room_photos: Optional[List[str]] = None
+    room_description: Optional[str] = Field(None, max_length=700)
+
+
+class RoomResponse(RoomBase):
+    id: UUID
+    property_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # Property Schemas
 class PropertyBase(BaseModel):
     title: str
     description: Optional[str] = None
     address: str
     city: str
+    city_id: Optional[UUID] = None
     locality: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     gender_preference: GenderPreferenceEnum
     amenities: Optional[List[str]] = None
-    monthly_rent: int = Field(..., ge=0)
-    deposit: int = Field(..., ge=0)
+    monthly_rent: Optional[int] = Field(None, ge=0)
+    deposit: Optional[int] = Field(None, ge=0)
+    maintenance_charge: Optional[int] = Field(0, ge=0)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: date
@@ -37,7 +95,7 @@ class PropertyBase(BaseModel):
 
 
 class PropertyCreate(PropertyBase):
-    pass
+    rooms: Optional[List[RoomCreate]] = None
 
 
 class PropertyUpdate(BaseModel):
@@ -45,6 +103,7 @@ class PropertyUpdate(BaseModel):
     description: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
+    city_id: Optional[UUID] = None
     locality: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -52,6 +111,7 @@ class PropertyUpdate(BaseModel):
     amenities: Optional[List[str]] = None
     monthly_rent: Optional[int] = Field(None, ge=0)
     deposit: Optional[int] = Field(None, ge=0)
+    maintenance_charge: Optional[int] = Field(None, ge=0)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: Optional[date] = None
@@ -62,12 +122,14 @@ class PropertyUpdate(BaseModel):
     virtual_tour_url: Optional[str] = None
     safety_score: Optional[int] = Field(None, ge=0, le=100)
     nearby_amenities: Optional[dict] = None
+    rooms: Optional[List[RoomCreate]] = None
 
 
 class PropertyResponse(PropertyBase):
     id: UUID
     owner_id: UUID
     status: str
+    total_vacancy: Optional[int] = 0
     created_at: datetime
     updated_at: datetime
 
@@ -81,13 +143,15 @@ class PropertyListResponse(BaseModel):
     title: str
     city: str
     locality: Optional[str]
-    monthly_rent: int
-    deposit: int
+    monthly_rent: Optional[int]
+    deposit: Optional[int] = 0  # Allow None, default to 0
     gender_preference: str
     amenities: Optional[List[str]]
     photos: Optional[List[str]]
     available_from: date
     status: str
+    total_vacancy: Optional[int] = 0
+    rooms: Optional[List[RoomResponse]] = None
 
     class Config:
         from_attributes = True
@@ -100,35 +164,6 @@ class PropertyDetailResponse(PropertyResponse):
     review_count: Optional[int] = None
 
 
-# Room Schemas
-class RoomBase(BaseModel):
-    room_type: str
-    bed_count: int = Field(..., gt=0)
-    price: int = Field(..., ge=0)
-    is_available: Optional[bool] = True
-    room_photos: Optional[List[str]] = None
-
-
-class RoomCreate(RoomBase):
-    pass
-
-
-class RoomUpdate(BaseModel):
-    room_type: Optional[str] = None
-    bed_count: Optional[int] = Field(None, gt=0)
-    price: Optional[int] = Field(None, ge=0)
-    is_available: Optional[bool] = None
-    room_photos: Optional[List[str]] = None
-
-
-class RoomResponse(RoomBase):
-    id: UUID
-    property_id: UUID
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 # Search/Filter Schemas

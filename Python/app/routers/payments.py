@@ -1,7 +1,7 @@
 """Razorpay Payment Gateway Integration."""
 from typing import Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -109,7 +109,13 @@ async def create_payment_order(
         )
         
     except ImportError:
-        # Razorpay not installed - return mock order for development
+        # Razorpay not installed - only allow mock orders in debug mode
+        if not settings.debug:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment service unavailable. Please try again later."
+            )
+        
         mock_order_id = f"order_mock_{datetime.now().timestamp()}"
         return CreateOrderResponse(
             order_id=mock_order_id,
@@ -156,8 +162,9 @@ async def verify_payment(
         ).hexdigest()
         
         if generated_signature != request.razorpay_signature:
-            # For development/testing, allow mock payments
-            if not request.razorpay_order_id.startswith("order_mock_"):
+            # Only allow mock payments in debug mode
+            is_mock_order = request.razorpay_order_id.startswith("order_mock_")
+            if not is_mock_order or not settings.debug:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid payment signature"
@@ -165,7 +172,7 @@ async def verify_payment(
         
         # Update payment status
         payment.status = PaymentStatus.completed
-        payment.payment_date = datetime.utcnow()
+        payment.payment_date = datetime.now(timezone.utc)
         payment.transaction_id = request.razorpay_payment_id
         
         # Update booking status

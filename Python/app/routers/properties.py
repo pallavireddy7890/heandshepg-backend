@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from datetime import date, timedelta
 
 from app.database import get_db
 from app.models import User, Property, Room, Review, Profile
@@ -21,6 +22,7 @@ from app.schemas import (
     GenderPreferenceEnum,
 )
 from app.utils.security import get_current_user, require_owner
+from app.services.vacancy import get_room_availability, get_property_availability
 
 router = APIRouter(prefix="/properties", tags=["Properties"])
 
@@ -39,7 +41,8 @@ async def list_properties(
     limit: int = 50,
 ):
     """List properties with optional filters."""
-    query = db.query(Property).filter(Property.status == "active")
+    from sqlalchemy.orm import joinedload
+    query = db.query(Property).options(joinedload(Property.rooms)).filter(Property.status == "active")
     
     if city:
         query = query.filter(Property.city.ilike(f"%{city}%"))
@@ -99,6 +102,7 @@ async def get_property(
         "name": owner_profile.name if owner_profile else "Owner",
         "phone": owner_profile.phone if owner_profile else None,
         "profile_photo": owner_profile.profile_photo if owner_profile else None,
+        "languages_known": owner_profile.languages_known if owner_profile else None,
     }
     response.average_rating = float(review_stats.avg_rating) if review_stats.avg_rating else None
     response.review_count = review_stats.count or 0
@@ -113,11 +117,26 @@ async def create_property(
     db: Session = Depends(get_db)
 ):
     """Create a new property (owner only)."""
+    # Extract rooms if provided
+    rooms_data = property_data.rooms
+    property_dict = property_data.model_dump(exclude={"rooms"})
+    
     new_property = Property(
         owner_id=current_user.id,
-        **property_data.model_dump()
+        **property_dict
     )
     db.add(new_property)
+    db.flush()  # To get the property ID
+    
+    # Create rooms if provided
+    if rooms_data:
+        for room_data in rooms_data:
+            new_room = Room(
+                property_id=new_property.id,
+                **room_data.model_dump()
+            )
+            db.add(new_room)
+    
     db.commit()
     db.refresh(new_property)
     return new_property
@@ -142,9 +161,24 @@ async def update_property(
             detail="Property not found or you don't have permission to edit it"
         )
     
-    update_data = property_data.model_dump(exclude_unset=True)
+    # Extract rooms if provided
+    rooms_data = property_data.rooms
+    update_data = property_data.model_dump(exclude_unset=True, exclude={"rooms"})
+    
     for field, value in update_data.items():
         setattr(property, field, value)
+    
+    # Handle nested rooms if provided
+    if rooms_data is not None:
+        # Simple implementation: delete old rooms and create new ones
+        # For a more "accurate" sync, we'd match by ID, but create/update often implies a full reset in simple PG apps
+        db.query(Room).filter(Room.property_id == property_id).delete()
+        for room_data in rooms_data:
+            new_room = Room(
+                property_id=property_id,
+                **room_data.model_dump()
+            )
+            db.add(new_room)
     
     db.commit()
     db.refresh(property)
@@ -183,6 +217,45 @@ async def get_property_rooms(
     """Get rooms for a property."""
     rooms = db.query(Room).filter(Room.property_id == property_id).all()
     return rooms
+
+
+@router.get("/{property_id}/availability")
+async def property_availability(
+    property_id: UUID,
+    start_date: date = Query(..., description="Start date for availability check"),
+    end_date: date = Query(..., description="End date for availability check"),
+    db: Session = Depends(get_db)
+):
+    """Get bed availability for all rooms in a property over a date range."""
+    property_obj = db.query(Property).filter(Property.id == property_id).first()
+    if not property_obj:
+        raise HTTPException(status_code=404, detail="Property not found")
+    
+    return get_property_availability(db, property_id, start_date, end_date)
+
+
+@router.get("/{property_id}/rooms/{room_id}/availability")
+async def room_availability(
+    property_id: UUID,
+    room_id: UUID,
+    start_date: date = Query(..., description="Start date for availability check"),
+    end_date: date = Query(..., description="End date for availability check"),
+    db: Session = Depends(get_db)
+):
+    """Get bed availability for a specific room over a date range."""
+    room = db.query(Room).filter(
+        Room.id == room_id,
+        Room.property_id == property_id
+    ).first()
+    
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    
+    availability = get_room_availability(db, room_id, start_date, end_date)
+    availability["price"] = room.price
+    availability["stay_type"] = room.stay_type or "monthly"
+    
+    return availability
 
 
 @router.post("/{property_id}/rooms", response_model=RoomResponse, dependencies=[Depends(require_owner)])

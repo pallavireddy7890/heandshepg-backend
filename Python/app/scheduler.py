@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from app.database import SessionLocal
-from app.models import Booking, Payment, User, Profile, Property, Notification
+from app.models import Booking, Payment, User, Profile, Property, Notification, Room
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -148,6 +148,77 @@ def cleanup_expired_bookings():
         db.close()
 
 
+def complete_ended_stays():
+    """Auto-complete bookings where end_date has passed.
+    
+    This job:
+    1. Finds active bookings where end_date < today
+    2. Marks them as 'completed'
+    3. Notifies user: "Your stay has ended"
+    4. Notifies owner: "Bed vacated, vacancy increased"
+    """
+    logger.info("Running ended stays completion...")
+    
+    db = SessionLocal()
+    try:
+        today = datetime.utcnow().date()
+        
+        # Find active bookings that have ended
+        ended_bookings = db.query(Booking).filter(
+            Booking.end_date < today,
+            Booking.status.in_(['active', 'paid', 'checked_in'])
+        ).all()
+        
+        completed_count = 0
+        
+        for booking in ended_bookings:
+            # Mark as completed
+            booking.status = 'completed'
+            
+            # Get property and room info
+            property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+            property_title = property_obj.title if property_obj else "Property"
+            
+            room = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
+            room_info = f" ({room.room_type})" if room else ""
+            
+            # Notify user: Stay ended
+            user_notification = Notification(
+                id=uuid.uuid4(),
+                user_id=booking.customer_id,
+                title="Stay Ended",
+                message=f"Your stay at {property_title}{room_info} has ended. Thank you for staying with us!",
+                type="stay_ended",
+                link="/bookings",
+                read=False
+            )
+            db.add(user_notification)
+            
+            # Notify owner: Bed vacated
+            owner_notification = Notification(
+                id=uuid.uuid4(),
+                user_id=booking.owner_id,
+                title="Bed Vacated",
+                message=f"Bed vacated at {property_title}{room_info}. Vacancy has been increased.",
+                type="bed_vacated",
+                link="/owner/dashboard",
+                read=False
+            )
+            db.add(owner_notification)
+            
+            completed_count += 1
+            logger.info(f"Completed booking {booking.id} - stay ended")
+        
+        db.commit()
+        logger.info(f"Completed {completed_count} ended stays")
+        
+    except Exception as e:
+        logger.error(f"Error in ended stays completion: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def setup_scheduler(app):
     """Set up APScheduler with background jobs."""
     try:
@@ -180,6 +251,15 @@ def setup_scheduler(app):
             CronTrigger(hour=0, minute=0),
             id="booking_cleanup",
             name="Expired Booking Cleanup",
+            replace_existing=True
+        )
+        
+        # Complete ended stays daily at 1 AM
+        scheduler.add_job(
+            complete_ended_stays,
+            CronTrigger(hour=1, minute=0),
+            id="complete_ended_stays",
+            name="Complete Ended Stays",
             replace_existing=True
         )
         

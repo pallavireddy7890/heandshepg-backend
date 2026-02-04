@@ -190,6 +190,9 @@ async def approve_owner_application(
     db: Session = Depends(get_db),
 ):
     """Approve an owner application (admin only)."""
+    from app.models import Notification
+    from app.services.notification_service import NotificationService
+    
     application = db.query(OwnersProfile).filter(OwnersProfile.id == application_id).first()
     
     if not application:
@@ -206,6 +209,22 @@ async def approve_owner_application(
         new_role = UserRole(user_id=application.user_id, role=AppRole.owner)
         db.add(new_role)
     
+    # Get owner info for notification
+    owner_user = db.query(User).filter(User.id == application.user_id).first()
+    owner_profile = db.query(Profile).filter(Profile.user_id == application.user_id).first()
+    owner_name = owner_profile.name if owner_profile else "Owner"
+    owner_email = owner_user.email if owner_user else None
+    
+    # Create welcome notification for owner
+    welcome_notification = Notification(
+        user_id=application.user_id,
+        type="owner_approved",
+        title="🎉 Welcome to He&She PG!",
+        message=f"Congratulations {owner_name}! Your owner account has been approved. You can now add properties and start accepting bookings.",
+        read=False,
+    )
+    db.add(welcome_notification)
+    
     # Create audit log
     create_audit_log(
         db=db,
@@ -218,7 +237,59 @@ async def approve_owner_application(
     )
     
     db.commit()
+    
+    # Send welcome email to the approved owner
+    if owner_email:
+        try:
+            email_body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="background: linear-gradient(135deg, #f59e0b, #eab308); padding: 20px; border-radius: 10px 10px 0 0;">
+                    <h1 style="color: white; margin: 0;">🎉 Welcome to He&She PG!</h1>
+                </div>
+                <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px;">
+                    <h2 style="color: #374151;">Congratulations, {owner_name}!</h2>
+                    <p style="color: #6b7280; font-size: 16px;">
+                        Your owner account has been <strong>approved</strong>! You now have full access to the Owner Dashboard.
+                    </p>
+                    <p style="color: #6b7280; font-size: 16px;">
+                        Here's what you can do now:
+                    </p>
+                    <ul style="color: #6b7280; font-size: 16px;">
+                        <li>📍 Add your properties with detailed room configurations</li>
+                        <li>📅 Manage bookings from potential tenants</li>
+                        <li>💰 Track payments and revenue</li>
+                        <li>👥 Manage your tenants</li>
+                        <li>📢 Send announcements to your tenants</li>
+                    </ul>
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="http://localhost:8080/owner/dashboard" 
+                           style="background: #f59e0b; color: white; padding: 15px 30px; 
+                                  text-decoration: none; border-radius: 8px; font-weight: bold;
+                                  display: inline-block;">
+                            Go to Owner Dashboard
+                        </a>
+                    </div>
+                    <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
+                    <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+                        © 2024 He&She PG. All rights reserved.
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+            NotificationService.send_email(
+                to_email=owner_email,
+                subject="🎉 Your He&She PG Owner Account is Approved!",
+                body_html=email_body
+            )
+        except Exception as e:
+            # Don't fail the approval if email fails
+            import logging
+            logging.warning(f"Failed to send welcome email to owner {owner_email}: {e}")
+    
     return {"message": "Application approved successfully"}
+
 
 
 @router.put("/owner-applications/{application_id}/reject", dependencies=[Depends(require_admin)])
@@ -616,3 +687,686 @@ async def setup_admin_role(
         }
 
 
+# ========== Admin Payments View ==========
+
+class AdminPaymentResponse(BaseModel):
+    id: UUID
+    booking_id: Optional[UUID]
+    user_id: UUID
+    user_name: Optional[str]
+    user_email: Optional[str]
+    property_title: Optional[str]
+    amount: int
+    currency: str
+    status: str
+    type: str
+    razorpay_payment_id: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/payments", response_model=List[AdminPaymentResponse], dependencies=[Depends(require_admin)])
+async def get_all_payments(
+    db: Session = Depends(get_db),
+    status_filter: Optional[str] = None,
+    type_filter: Optional[str] = None,
+    skip: int = 0,
+    limit: int = Query(default=50, le=100),
+):
+    """Get all payments platform-wide (admin only)."""
+    from app.models import Payment, Booking, Property
+    
+    query = db.query(Payment)
+    
+    if status_filter:
+        query = query.filter(Payment.status == status_filter)
+    if type_filter:
+        query = query.filter(Payment.type == type_filter)
+    
+    payments = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result = []
+    for payment in payments:
+        user = db.query(User).filter(User.id == payment.user_id).first()
+        profile = db.query(Profile).filter(Profile.user_id == payment.user_id).first()
+        
+        property_title = None
+        if payment.booking_id:
+            booking = db.query(Booking).filter(Booking.id == payment.booking_id).first()
+            if booking:
+                prop = db.query(Property).filter(Property.id == booking.property_id).first()
+                property_title = prop.title if prop else None
+        
+        result.append(AdminPaymentResponse(
+            id=payment.id,
+            booking_id=payment.booking_id,
+            user_id=payment.user_id,
+            user_name=profile.name if profile else None,
+            user_email=user.email if user else None,
+            property_title=property_title,
+            amount=payment.amount,
+            currency=payment.currency or "INR",
+            status=payment.status if isinstance(payment.status, str) else payment.status.value if payment.status else "pending",
+            type=payment.type if isinstance(payment.type, str) else payment.type.value if payment.type else "booking",
+            razorpay_payment_id=payment.razorpay_payment_id,
+            created_at=payment.created_at,
+        ))
+    
+    return result
+
+
+@router.get("/payments/stats", dependencies=[Depends(require_admin)])
+async def get_payment_stats(db: Session = Depends(get_db)):
+    """Get payment statistics for admin dashboard."""
+    from app.models import Payment
+    
+    total_payments = db.query(func.count(Payment.id)).scalar() or 0
+    total_revenue = db.query(func.sum(Payment.amount)).filter(Payment.status == "completed").scalar() or 0
+    pending_payments = db.query(func.count(Payment.id)).filter(Payment.status == "pending").scalar() or 0
+    failed_payments = db.query(func.count(Payment.id)).filter(Payment.status == "failed").scalar() or 0
+    
+    return {
+        "total_payments": total_payments,
+        "total_revenue": total_revenue,
+        "pending_payments": pending_payments,
+        "failed_payments": failed_payments,
+    }
+
+
+# ========== Block/Unblock Users ==========
+
+class UserStatusUpdate(BaseModel):
+    is_active: bool
+    reason: Optional[str] = None
+
+
+@router.put("/users/{user_id}/status", dependencies=[Depends(require_admin)])
+async def toggle_user_status(
+    user_id: UUID,
+    status_data: UserStatusUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Block or unblock a user (admin only)."""
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own status"
+        )
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    old_status = "active" if user.is_active else "blocked"
+    user.is_active = status_data.is_active
+    new_status = "active" if status_data.is_active else "blocked"
+    
+    # Create audit log
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action="user_status_change",
+        entity_type="user",
+        entity_id=user_id,
+        details=f"Changed status from {old_status} to {new_status}. Reason: {status_data.reason or 'Not specified'}",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    db.commit()
+    return {"message": f"User {'activated' if status_data.is_active else 'blocked'} successfully"}
+
+
+# ========== Admin Announcements ==========
+
+class AdminAnnouncementCreate(BaseModel):
+    title: str
+    message: str
+    target_audience: str = "all"  # all, owners, tenants
+    priority: str = "normal"  # low, normal, high, urgent
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+
+
+class AdminAnnouncementResponse(BaseModel):
+    id: UUID
+    title: str
+    message: str
+    target_audience: str
+    priority: str
+    is_admin: bool
+    start_time: Optional[datetime]
+    end_time: Optional[datetime]
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+    class Config:
+        from_attributes = True
+
+
+@router.post("/announcements", response_model=AdminAnnouncementResponse, dependencies=[Depends(require_admin)])
+async def create_admin_announcement(
+    data: AdminAnnouncementCreate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create an admin announcement and notify users (admin only)."""
+    from app.models import Notification, UserRole
+    from app.models.announcement import Announcement
+    
+    valid_audiences = ["all", "owners", "tenants"]
+    if data.target_audience not in valid_audiences:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid target audience. Must be one of: {valid_audiences}"
+        )
+    
+    # 1. Create the persistent announcement
+    announcement = Announcement(
+        owner_id=current_user.id,
+        title=data.title,
+        message=data.message,
+        priority=data.priority,
+        target_audience=data.target_audience,
+        is_admin=True,
+        start_time=data.start_time or datetime.utcnow(),
+        end_time=data.end_time,
+        is_active=True
+    )
+    db.add(announcement)
+    db.flush() # Get ID
+    
+    # 2. Get target users based on audience
+    if data.target_audience == "all":
+        users = db.query(User).filter(User.is_active == True).all()
+    elif data.target_audience == "owners":
+        users = db.query(User).join(UserRole).filter(
+            User.is_active == True,
+            UserRole.role == AppRole.owner
+        ).all()
+    else:  # tenants
+        users = db.query(User).join(UserRole).filter(
+            User.is_active == True,
+            UserRole.role == AppRole.customer
+        ).all()
+    
+    # 3. Create notifications for all target users
+    sent_count = 0
+    for user in users:
+        notification = Notification(
+            user_id=user.id,
+            title=f"📢 {data.title}",
+            message=data.message,
+            type="admin_announcement",
+        )
+        db.add(notification)
+        sent_count += 1
+    
+    # 4. Create audit log
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action="admin_announcement",
+        entity_type="announcement",
+        entity_id=announcement.id,
+        details=f"Sent announcement '{data.title}' to {data.target_audience} ({sent_count} users)",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    db.commit()
+    db.refresh(announcement)
+    
+    return announcement
+
+
+@router.get("/announcements", response_model=List[AdminAnnouncementResponse], dependencies=[Depends(require_admin)])
+async def list_admin_announcements(
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int = Query(default=50, le=100),
+):
+    """List all admin announcements (admin only)."""
+    from app.models.announcement import Announcement
+    
+    announcements = db.query(Announcement).filter(
+        Announcement.is_admin == True
+    ).order_by(Announcement.created_at.desc()).offset(skip).limit(limit).all()
+    
+    return announcements
+
+
+@router.delete("/announcements/{announcement_id}", dependencies=[Depends(require_admin)])
+async def delete_admin_announcement(
+    announcement_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete an admin announcement (admin only)."""
+    from app.models.announcement import Announcement
+    
+    announcement = db.query(Announcement).filter(
+        Announcement.id == announcement_id,
+        Announcement.is_admin == True
+    ).first()
+    
+    if not announcement:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    
+    # Create audit log
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action="delete_announcement",
+        entity_type="announcement",
+        entity_id=announcement_id,
+        details=f"Deleted announcement: {announcement.title}",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    db.delete(announcement)
+    db.commit()
+    
+    return {"message": "Announcement deleted"}
+
+
+# ========== Refund Management ==========
+
+class RefundRequest(BaseModel):
+    reason: str
+    amount: Optional[int] = None  # If None, full refund
+
+
+@router.post("/payments/{payment_id}/refund", dependencies=[Depends(require_admin)])
+async def initiate_refund(
+    payment_id: UUID,
+    refund_data: RefundRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Initiate a refund for a payment (admin only)."""
+    from app.models import Payment
+    from app.config import get_settings
+    
+    settings = get_settings()
+    
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+    
+    if payment.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only completed payments can be refunded"
+        )
+    
+    refund_amount = refund_data.amount or payment.amount
+    
+    if refund_amount > payment.amount:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Refund amount cannot exceed payment amount"
+        )
+    
+    # Try Razorpay refund if payment has razorpay_payment_id
+    razorpay_refund_id = None
+    if payment.razorpay_payment_id:
+        try:
+            import razorpay
+            client = razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+            refund = client.payment.refund(payment.razorpay_payment_id, {
+                "amount": refund_amount * 100,  # Convert to paise
+                "notes": {"reason": refund_data.reason}
+            })
+            razorpay_refund_id = refund.get("id")
+        except Exception as e:
+            # Log error but continue with manual refund tracking
+            pass
+    
+    # Update payment status
+    payment.status = "refunded"
+    
+    # Create refund record
+    refund_payment = Payment(
+        booking_id=payment.booking_id,
+        user_id=payment.user_id,
+        amount=-refund_amount,  # Negative amount for refund
+        currency=payment.currency,
+        razorpay_payment_id=razorpay_refund_id,
+        status="completed",
+        type="refund",
+    )
+    db.add(refund_payment)
+    
+    # Create audit log
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action="payment_refund",
+        entity_type="payment",
+        entity_id=payment_id,
+        details=f"Refunded ₹{refund_amount}. Reason: {refund_data.reason}",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    db.commit()
+    
+    return {
+        "message": f"Refund of ₹{refund_amount} processed successfully",
+        "original_payment_id": str(payment_id),
+        "refund_amount": refund_amount,
+        "razorpay_refund_id": razorpay_refund_id,
+    }
+
+
+# ========== Asset Management ==========
+
+from fastapi import UploadFile, File
+import os
+import uuid as uuid_lib
+
+# Configure admin asset directory
+ADMIN_ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "admin_assets")
+os.makedirs(ADMIN_ASSETS_DIR, exist_ok=True)
+
+@router.post("/upload-asset", dependencies=[Depends(require_admin)])
+async def upload_admin_asset(
+    file: UploadFile = File(...),
+    asset_type: str = "general"
+):
+    """Upload an asset for the platform (city images, etc)."""
+    # Validate file extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    if ext not in allowed_exts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File type not allowed. Allowed types: {', '.join(allowed_exts)}"
+        )
+    
+    # Read file content
+    content = await file.read()
+    
+    # Validate file size (max 5MB)
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File too large. Maximum size is 5MB."
+        )
+    
+    # Generate unique filename
+    unique_filename = f"{asset_type}_{uuid_lib.uuid4().hex}{ext}"
+    file_path = os.path.join(ADMIN_ASSETS_DIR, unique_filename)
+    
+    # Save file
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    # Return URL path
+    from app.config import get_settings
+    settings = get_settings()
+    # Assuming the app mounts /uploads to StaticFiles
+    url_path = f"/uploads/admin_assets/{unique_filename}"
+    
+    return {
+        "message": "Asset uploaded successfully",
+        "url": url_path,
+        "filename": unique_filename
+    }
+
+
+# ========== City Management ==========
+
+class CityCreate(BaseModel):
+    name: str
+    slug: Optional[str] = None
+    image_url: Optional[str] = None
+    tagline: Optional[str] = None
+    status: str = "AVAILABLE"  # AVAILABLE, COMING_SOON, DISABLED
+    priority_order: int = 0
+
+
+class CityUpdate(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    image_url: Optional[str] = None
+    tagline: Optional[str] = None
+    status: Optional[str] = None
+    priority_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class AdminCityResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: Optional[str] = None
+    image_url: Optional[str] = None
+    tagline: Optional[str] = None
+    status: str = "AVAILABLE"
+    is_active: bool = True
+    priority_order: int = 0
+    property_count: int = 0
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/cities", response_model=List[AdminCityResponse], dependencies=[Depends(require_admin)])
+async def get_admin_cities(
+    db: Session = Depends(get_db),
+    include_inactive: bool = Query(default=False),
+):
+    """Get all cities for admin management with property counts."""
+    from app.models.city import City
+    from app.models.property import Property
+    from sqlalchemy import func
+    
+    query = db.query(City)
+    if not include_inactive:
+        query = query.filter(City.is_active == True)
+    
+    cities = query.order_by(City.priority_order, City.name).all()
+    
+    # Get property counts per city
+    property_counts = {}
+    counts = db.query(
+        func.lower(Property.city), func.count(Property.id)
+    ).filter(Property.status == "active").group_by(func.lower(Property.city)).all()
+    for city_name, count in counts:
+        if city_name:
+            property_counts[city_name.lower()] = count
+    
+    result = []
+    for city in cities:
+        city_data = {
+            "id": city.id,
+            "name": city.name,
+            "slug": city.slug,
+            "image_url": city.image_url,
+            "tagline": city.tagline,
+            "status": city.status or "AVAILABLE",
+            "is_active": city.is_active,
+            "priority_order": city.priority_order or 0,
+            "property_count": property_counts.get(city.name.lower(), 0),
+            "created_at": city.created_at,
+        }
+        result.append(city_data)
+    
+    return result
+
+
+@router.post("/cities", dependencies=[Depends(require_admin)])
+async def create_city(
+    city_data: CityCreate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new city (admin only)."""
+    from app.models.city import City
+    
+    # Check if city already exists
+    existing = db.query(City).filter(func.lower(City.name) == city_data.name.lower()).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"City '{city_data.name}' already exists"
+        )
+    
+    slug = city_data.slug or city_data.name.lower().replace(" ", "-").replace(".", "")
+    
+    new_city = City(
+        name=city_data.name,
+        slug=slug,
+        image_url=city_data.image_url,
+        tagline=city_data.tagline,
+        status=city_data.status,
+        priority_order=city_data.priority_order,
+        is_active=True,
+    )
+    db.add(new_city)
+    
+    # Create audit log
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action="city_created",
+        entity_type="city",
+        entity_id=new_city.id,
+        details=f"Created city: {city_data.name}",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    db.commit()
+    db.refresh(new_city)
+    
+    return {
+        "message": f"City '{city_data.name}' created successfully",
+        "city": {
+            "id": new_city.id,
+            "name": new_city.name,
+            "slug": new_city.slug,
+            "status": new_city.status,
+        }
+    }
+
+
+@router.put("/cities/{city_id}", dependencies=[Depends(require_admin)])
+async def update_city(
+    city_id: UUID,
+    city_data: CityUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update a city (admin only)."""
+    from app.models.city import City
+    
+    city = db.query(City).filter(City.id == city_id).first()
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="City not found"
+        )
+    
+    # Update fields
+    update_details = []
+    if city_data.name is not None:
+        update_details.append(f"name: {city.name} → {city_data.name}")
+        city.name = city_data.name
+    if city_data.slug is not None:
+        city.slug = city_data.slug
+    if city_data.image_url is not None:
+        city.image_url = city_data.image_url
+    if city_data.tagline is not None:
+        city.tagline = city_data.tagline
+    if city_data.status is not None:
+        update_details.append(f"status: {city.status} → {city_data.status}")
+        city.status = city_data.status
+    if city_data.priority_order is not None:
+        city.priority_order = city_data.priority_order
+    if city_data.is_active is not None:
+        update_details.append(f"is_active: {city.is_active} → {city_data.is_active}")
+        city.is_active = city_data.is_active
+    
+    # Create audit log
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action="city_updated",
+        entity_type="city",
+        entity_id=city_id,
+        details=f"Updated city: {city.name}. Changes: {', '.join(update_details) if update_details else 'minor updates'}",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    db.commit()
+    db.refresh(city)
+    
+    return {
+        "message": f"City '{city.name}' updated successfully",
+        "city": {
+            "id": city.id,
+            "name": city.name,
+            "slug": city.slug,
+            "status": city.status,
+            "is_active": city.is_active,
+        }
+    }
+
+
+@router.delete("/cities/{city_id}", dependencies=[Depends(require_admin)])
+async def delete_city(
+    city_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a city (admin only). Only allowed if no properties exist for this city."""
+    from app.models.city import City
+    from app.models.property import Property
+    
+    city = db.query(City).filter(City.id == city_id).first()
+    if not city:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="City not found"
+        )
+    
+    # Check for properties
+    property_count = db.query(func.count(Property.id)).filter(
+        func.lower(Property.city) == city.name.lower()
+    ).scalar() or 0
+    
+    if property_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete city '{city.name}' - {property_count} properties exist. Disable the city instead."
+        )
+    
+    city_name = city.name
+    
+    # Create audit log before deletion
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action="city_deleted",
+        entity_type="city",
+        entity_id=city_id,
+        details=f"Deleted city: {city_name}",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    db.delete(city)
+    db.commit()
+    
+    return {"message": f"City '{city_name}' deleted successfully"}

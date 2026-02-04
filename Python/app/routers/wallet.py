@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Booking, Profile, Wallet, WalletTransaction, TransactionType, TransactionStatus, Property
+from app.models import User, Booking, Profile, Wallet, WalletTransaction, TransactionType, TransactionStatus, Property, Room
 from app.utils.security import get_current_user
 from app.services.wallet_service import WalletService
 from app.config import get_settings
@@ -32,6 +32,7 @@ class WalletBalanceResponse(BaseModel):
 class InitiatePaymentRequest(BaseModel):
     booking_id: str
     amount: float  # Amount in INR
+    payment_type: Optional[str] = "total"  # total, rent, deposit
 
 
 class InitiatePaymentResponse(BaseModel):
@@ -148,6 +149,15 @@ async def initiate_wallet_payment(
     if booking.status not in ["accepted", "requested"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be 'accepted' to make payment. Current: {booking.status}")
     
+    # Check for vacancy before allowing payment initiation
+    if booking.room_id:
+        room = db.query(Room).filter(Room.id == booking.room_id).first()
+        if room and (not room.is_available or (room.vacancy_count is not None and room.vacancy_count <= 0)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This room is no longer available"
+            )
+    
     # Get owner's wallet (create if not exists)
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
     
@@ -194,8 +204,13 @@ async def initiate_wallet_payment(
         amount=amount_paise,
         transaction_type=TransactionType.credit,
         razorpay_order_id=razorpay_order_id,
-        description=f"Payment for booking {request.booking_id}",
+        description=f"Payment for {request.payment_type} - booking {request.booking_id}",
     )
+    
+    # Store payment type if column exists
+    if hasattr(transaction, 'payment_type'):
+        transaction.payment_type = request.payment_type
+        db.commit()
     
     return InitiatePaymentResponse(
         transaction_id=str(transaction.id),
@@ -340,7 +355,43 @@ async def verify_transaction_otp(
     if transaction.booking_id:
         booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
         if booking:
-            booking.status = "paid"
+            # Update specific flags based on payment_type
+            p_type = transaction.payment_type
+            if p_type == 'rent':
+                booking.rent_paid = True
+            elif p_type == 'deposit':
+                booking.deposit_paid = True
+            elif p_type == 'maintenance':
+                booking.maintenance_paid = True
+            elif p_type == 'total':
+                booking.rent_paid = True
+                booking.deposit_paid = True
+                booking.maintenance_paid = True
+            
+            # Update overall status
+            # If both rent and deposit are paid, it's fully paid
+            if booking.rent_paid and booking.deposit_paid:
+                booking.status = "paid"
+            # If at least rent is paid, consider them "checked_in"
+            elif booking.rent_paid:
+                booking.status = "checked_in"
+            
+            # AUTOMATIC VACANCY DEDUCTION
+            # If the booking is now "paid" or "checked_in", and it has a room assigned,
+            # we should decrease the vacancy count by 1.
+            if booking.status in ["paid", "checked_in"] and booking.room_id:
+                room = db.query(Room).filter(Room.id == booking.room_id).first()
+                if room and room.vacancy_count and room.vacancy_count > 0:
+                    room.vacancy_count -= 1
+                    # If vacancy reaches 0, mark as not available
+                    if room.vacancy_count == 0:
+                        room.is_available = False
+                        
+                    # Log vacancy update
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Vacancy deducted for room {room.id}. New count: {room.vacancy_count}")
+            
             db.commit()
     
     # Get updated balance
@@ -350,14 +401,29 @@ async def verify_transaction_otp(
     try:
         # Get property title for notification
         property_title = "Property"
+        customer_name = "Customer"
+        owner_name = "Owner"
         if transaction.booking_id:
             booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
             if booking:
                 prop = db.query(Property).filter(Property.id == booking.property_id).first()
                 if prop:
                     property_title = prop.title
+                # Get customer name
+                from app.models import Profile
+                customer_profile = db.query(Profile).filter(Profile.user_id == transaction.payer_id).first()
+                if customer_profile:
+                    customer_name = customer_profile.name
+                # Get owner name
+                owner_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+                if owner_profile:
+                    owner_name = owner_profile.name
         
         notify_payment_verified(db, transaction.payer_id, transaction.amount / 100, property_title)
+        
+        # Notify admins about completed payment
+        from app.utils.notifications import notify_admins_payment_completed
+        notify_admins_payment_completed(db, customer_name, owner_name, transaction.amount / 100, property_title)
     except Exception:
         pass  # Don't fail if notification fails
     

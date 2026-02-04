@@ -19,6 +19,8 @@ class Announcement(Base):
     title = Column(String(200), nullable=False)
     message = Column(Text, nullable=False)
     priority = Column(String(20), default='normal')  # normal, important, urgent
+    target_audience = Column(String(20), default='all')  # all, owners, tenants
+    is_admin = Column(Boolean, default=False)
     start_time = Column(DateTime(timezone=True), server_default=func.now())  # When announcement becomes visible
     end_time = Column(DateTime(timezone=True))  # When announcement expires
     

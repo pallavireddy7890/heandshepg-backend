@@ -98,8 +98,21 @@ class Profile(Base):
     gst_doc_url = Column(Text)
     aadhar_front_url = Column(Text)
     aadhar_back_url = Column(Text)
+    dl_front_url = Column(Text)
+    dl_back_url = Column(Text)
     college_company_id_url = Column(Text)
     profile_verification_status = Column(String(20), default="pending")
+    
+    # NOTE: Owner availability fields removed temporarily until database migration is run
+    # Run: ALTER TABLE profiles ADD COLUMN IF NOT EXISTS owner_available BOOLEAN DEFAULT TRUE;
+    #      ALTER TABLE profiles ADD COLUMN IF NOT EXISTS available_from VARCHAR(10);
+    #      ALTER TABLE profiles ADD COLUMN IF NOT EXISTS available_to VARCHAR(10);
+    #      ALTER TABLE profiles ADD COLUMN IF NOT EXISTS available_days TEXT[];
+    # Then uncomment these lines:
+    # owner_available = Column(Boolean, default=True)
+    # available_from = Column(String(10))
+    # available_to = Column(String(10))
+    # available_days = Column(ARRAY(Text))
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

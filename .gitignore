@@ -44,3 +44,7 @@ htmlcov/
 # Uploads - user uploaded files should not be in version control
 Python/uploads/
 uploads/
+
+# Utility/Development Scripts - local only
+Python/seed_cities.py
+Python/create_admin_direct.py

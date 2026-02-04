@@ -18,8 +18,9 @@ async def get_property_reviews(
     property_id: UUID,
     db: Session = Depends(get_db)
 ):
-    """Get reviews for a property."""
+    """Get reviews for a property, sorted by highest rating first."""
     reviews = db.query(Review).filter(Review.property_id == property_id).order_by(
+        Review.rating.desc(),
         Review.created_at.desc()
     ).all()
     

@@ -13,19 +13,78 @@ from app.utils.security import get_current_user
 router = APIRouter(prefix="/users", tags=["Users"])
 
 
-@router.get("/profile", response_model=ProfileResponse)
+@router.get("/profile")
 async def get_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get current user's profile."""
+    """Get current user's profile with owner approval status if applicable."""
+    from app.models import UserRole, AppRole, OwnersProfile
+    
     profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found"
         )
-    return profile
+    
+    # Convert profile to dict for response
+    profile_dict = {
+        "id": profile.id,
+        "user_id": profile.user_id,
+        "name": profile.name,
+        "display_name": profile.display_name,
+        "business_name": profile.business_name,
+        "about": profile.about,
+        "phone": profile.phone,
+        "phone_verified": profile.phone_verified,
+        "email": profile.email,
+        "profile_photo": profile.profile_photo,
+        "address": profile.address,
+        "current_address": profile.current_address,
+        "permanent_address": profile.permanent_address,
+        "city": profile.city,
+        "gender": profile.gender,
+        "date_of_birth": profile.date_of_birth,
+        "work_type": profile.work_type,
+        "work_place": profile.work_place,
+        "mother_tongue": profile.mother_tongue,
+        "languages_known": profile.languages_known,
+        "emergency_contact_name": profile.emergency_contact_name,
+        "emergency_contact_phone": profile.emergency_contact_phone,
+        "emergency_contact_address": profile.emergency_contact_address,
+        "payment_reminders_enabled": profile.payment_reminders_enabled,
+        "maintenance_reminders_enabled": profile.maintenance_reminders_enabled,
+        "email_notifications": profile.email_notifications,
+        "sms_notifications": profile.sms_notifications,
+        "push_notifications": profile.push_notifications,
+        "hide_contact_info": profile.hide_contact_info,
+        "bank_account_number": profile.bank_account_number,
+        "bank_ifsc_code": profile.bank_ifsc_code,
+        "bank_name": profile.bank_name,
+        "pan_card_url": profile.pan_card_url,
+        "gst_doc_url": profile.gst_doc_url,
+        "aadhar_front_url": profile.aadhar_front_url,
+        "aadhar_back_url": profile.aadhar_back_url,
+        "dl_front_url": profile.dl_front_url,
+        "dl_back_url": profile.dl_back_url,
+        "college_company_id_url": profile.college_company_id_url,
+        "profile_verification_status": profile.profile_verification_status,
+        "created_at": profile.created_at,
+        "updated_at": profile.updated_at,
+    }
+    
+    # Check if user is an owner and add approval_status
+    user_role = db.query(UserRole).filter(UserRole.user_id == current_user.id).first()
+    if user_role and user_role.role == AppRole.owner:
+        owners_profile = db.query(OwnersProfile).filter(OwnersProfile.user_id == current_user.id).first()
+        if owners_profile:
+            profile_dict["approval_status"] = owners_profile.approval_status.value if owners_profile.approval_status else "pending"
+        else:
+            profile_dict["approval_status"] = "pending"
+    
+    return profile_dict
+
 
 
 @router.put("/profile")

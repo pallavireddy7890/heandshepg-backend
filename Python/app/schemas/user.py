@@ -126,8 +126,15 @@ class ProfileBase(BaseModel):
     gst_doc_url: Optional[str] = None
     aadhar_front_url: Optional[str] = None
     aadhar_back_url: Optional[str] = None
+    dl_front_url: Optional[str] = None
+    dl_back_url: Optional[str] = None
     college_company_id_url: Optional[str] = None
     profile_verification_status: Optional[str] = "pending"
+    # NOTE: Owner availability fields disabled until migration is run
+    # owner_available: Optional[bool] = True
+    # available_from: Optional[str] = None
+    # available_to: Optional[str] = None
+    # available_days: Optional[List[str]] = None
 
 
 class ProfileCreate(ProfileBase):
@@ -181,8 +188,15 @@ class ProfileUpdate(BaseModel):
     gst_doc_url: Optional[str] = None
     aadhar_front_url: Optional[str] = None
     aadhar_back_url: Optional[str] = None
+    dl_front_url: Optional[str] = None
+    dl_back_url: Optional[str] = None
     college_company_id_url: Optional[str] = None
     profile_verification_status: Optional[str] = None
+    # NOTE: Owner availability fields disabled until migration is run
+    # owner_available: Optional[bool] = None
+    # available_from: Optional[str] = None
+    # available_to: Optional[str] = None
+    # available_days: Optional[List[str]] = None
 
 
 class ProfileResponse(ProfileBase):

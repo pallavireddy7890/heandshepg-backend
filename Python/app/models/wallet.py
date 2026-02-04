@@ -56,6 +56,7 @@ class WalletTransaction(Base):
     
     # Transaction details
     amount = Column(Integer, nullable=False)  # Amount in paise
+    payment_type = Column(String(20), default='total')  # 'rent', 'deposit', 'total', 'maintenance'
     transaction_type = Column(ENUM('credit', 'debit', 'hold', 'release', 
                                    name='transaction_type', create_type=False), nullable=False)
     status = Column(ENUM('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded',

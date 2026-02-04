@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from pydantic import BaseModel
 
 from app.database import get_db
@@ -102,6 +102,14 @@ async def get_owner_properties(
                 "status": prop.status,
                 "available_from": prop.available_from.isoformat() if prop.available_from else None,
                 "created_at": prop.created_at.isoformat() if prop.created_at else None,
+                "rooms": [{
+                    "id": str(r.id),
+                    "room_type": r.room_type,
+                    "bed_count": r.bed_count,
+                    "price": r.price,
+                    "vacancy_count": r.vacancy_count,
+                    "stay_type": r.stay_type,
+                } for r in prop.rooms]
             })
         
         return result
@@ -141,7 +149,7 @@ async def delete_owner_property(
                 detail=f"Cannot delete property with {active_bookings} active booking(s). Please cancel or complete all bookings first."
             )
         
-        # Delete the property
+        # Delete the property (CASCADE will handle rooms)
         db.delete(property_obj)
         db.commit()
         
@@ -370,17 +378,94 @@ async def get_owner_tenants(
             
             result.append({
                 "id": str(user.id if user else booking.customer_id),
+                "booking_id": str(booking.id),
                 "name": profile.name if profile else None,
                 "email": user.email if user else "",
                 "phone": profile.phone if profile else None,
                 "property_title": property_obj.title if property_obj else None,
+                "property_id": str(property_obj.id) if property_obj else None,
                 "room_type": room.room_type if room else None,
                 "booking_status": booking.status.value if hasattr(booking.status, 'value') else str(booking.status),
                 "start_date": booking.start_date.isoformat() if booking.start_date else None,
                 "end_date": booking.end_date.isoformat() if booking.end_date else None,
                 "monthly_rent": booking.amount,
+                # Profile details
+                "profile_photo": profile.profile_photo if profile else None,
+                "gender": profile.gender if profile else None,
+                "date_of_birth": profile.date_of_birth if profile else None,
+                "work_type": profile.work_type if profile else None,
+                "work_place": profile.work_place if profile else None,
+                "current_address": profile.current_address if profile else None,
+                "permanent_address": profile.permanent_address if profile else None,
+                "city": profile.city if profile else None,
+                # Emergency contact
+                "emergency_contact_name": profile.emergency_contact_name if profile else None,
+                "emergency_contact_phone": profile.emergency_contact_phone if profile else None,
+                # KYC Documents
+                "aadhar_front_url": profile.aadhar_front_url if profile else None,
+                "aadhar_back_url": profile.aadhar_back_url if profile else None,
+                "pan_card_url": profile.pan_card_url if profile else None,
+                "dl_front_url": profile.dl_front_url if profile else None,
+                "dl_back_url": profile.dl_back_url if profile else None,
+                "college_company_id_url": profile.college_company_id_url if profile else None,
+                "profile_verification_status": profile.profile_verification_status if profile else "pending",
+                "documents_submitted": bool(
+                    (profile.aadhar_front_url if profile else None) or 
+                    (profile.pan_card_url if profile else None) or
+                    (profile.college_company_id_url if profile else None)
+                ),
             })
         
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class VerifyTenantRequest(BaseModel):
+    status: str  # "approved" or "rejected"
+
+
+@router.put("/tenants/{tenant_id}/verify", dependencies=[Depends(require_owner)])
+async def verify_tenant_profile(
+    tenant_id: UUID,
+    request: VerifyTenantRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Verify or reject a tenant's profile/KYC documents."""
+    try:
+        if request.status not in ["approved", "rejected", "pending"]:
+            raise HTTPException(status_code=400, detail="Invalid status. Must be 'approved', 'rejected', or 'pending'")
+        
+        # Get owner's properties
+        owner_properties = db.query(Property).filter(Property.owner_id == current_user.id).all()
+        property_ids = [p.id for p in owner_properties]
+        
+        if not property_ids:
+            raise HTTPException(status_code=403, detail="No properties found for this owner")
+        
+        # Check if tenant has booking with owner's property
+        tenant_booking = db.query(Booking).filter(
+            Booking.customer_id == tenant_id,
+            Booking.property_id.in_(property_ids),
+            Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
+        ).first()
+        
+        if not tenant_booking:
+            raise HTTPException(status_code=403, detail="This tenant does not have a booking with your property")
+        
+        # Update profile verification status
+        profile = db.query(Profile).filter(Profile.user_id == tenant_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Tenant profile not found")
+        
+        profile.profile_verification_status = request.status
+        db.commit()
+        
+        return {"message": f"Tenant profile verification status updated to {request.status}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+

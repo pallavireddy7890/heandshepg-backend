@@ -151,6 +151,14 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
     db.refresh(new_user)
     db.refresh(profile)
     
+    # Notify admins if a new owner signed up
+    if role_to_assign == AppRole.owner:
+        try:
+            from app.utils.notifications import notify_admins_owner_signup
+            notify_admins_owner_signup(db, user_data["name"], user_data["email"])
+        except Exception:
+            pass  # Don't fail signup if notification fails
+    
     # Create access token
     access_token = create_access_token(
         data={"sub": str(new_user.id), "email": new_user.email}
@@ -322,7 +330,6 @@ async def get_current_user_info(
 async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
     """Send password reset email."""
     from app.services.notification_service import NotificationService
-    from app.config import settings
     
     user = db.query(User).filter(User.email == data.email).first()
     
@@ -375,10 +382,10 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
         """
         
         # Send the email
-        email_sent = NotificationService.send_email(
+        email_sent, email_error = NotificationService.send_email(
             to_email=data.email,
             subject=email_subject,
-            html_content=email_body
+            body_html=email_body
         )
         
         if not email_sent:

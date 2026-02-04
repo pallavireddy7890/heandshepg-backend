@@ -32,3 +32,9 @@ twilio==8.10.0
 
 # Payments (Razorpay)
 razorpay==1.4.1
+
+# Rate Limiting
+slowapi==0.1.9
+
+# Background Scheduler
+APScheduler==3.10.4

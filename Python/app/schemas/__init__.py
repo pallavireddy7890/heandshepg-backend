@@ -36,6 +36,7 @@ from app.schemas.booking import (
     BookingCancelRequest,
     BookingResponse,
     BookingDetailResponse,
+    BookingExtend,
     PaymentCreate,
     PaymentResponse,
     InvoiceResponse,
@@ -59,6 +60,13 @@ from app.schemas.message import (
     ConversationWithMessages,
     NotificationResponse,
     NotificationMarkRead,
+)
+from app.schemas.maintenance import (
+    TicketCreate,
+    TicketUpdate,
+    TicketResponse,
+    TicketPriority as TicketPriorityEnum,
+    TicketStatus as TicketStatusEnum,
 )
 
 __all__ = [
@@ -95,6 +103,7 @@ __all__ = [
     "BookingCancelRequest",
     "BookingResponse",
     "BookingDetailResponse",
+    "BookingExtend",
     "PaymentCreate",
     "PaymentResponse",
     "InvoiceResponse",
@@ -116,6 +125,12 @@ __all__ = [
     "ConversationWithMessages",
     "NotificationResponse",
     "NotificationMarkRead",
+    # Maintenance schemas
+    "TicketCreate",
+    "TicketUpdate",
+    "TicketResponse",
+    "TicketPriorityEnum",
+    "TicketStatusEnum",
     # Notification status schemas
     "NotificationStatus",
     "ProfileUpdateResponse",
