@@ -1,0 +1,17 @@
+[Unit]
+Description=He&She PG Backend API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/heandshepg-backend/Python
+Environment="PATH=/var/www/heandshepg-backend/Python/venv/bin"
+EnvironmentFile=/var/www/heandshepg-backend/Python/.env
+ExecStart=/var/www/heandshepg-backend/Python/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
