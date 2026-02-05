@@ -6,10 +6,10 @@ After=network.target postgresql.service
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/var/www/heandshepg-backend/Python
-Environment="PATH=/var/www/heandshepg-backend/Python/venv/bin"
-EnvironmentFile=/var/www/heandshepg-backend/Python/.env
-ExecStart=/var/www/heandshepg-backend/Python/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+WorkingDirectory=/var/www/heandshepg-backend
+Environment="PATH=/var/www/heandshepg-backend/venv/bin"
+EnvironmentFile=/var/www/heandshepg-backend/.env
+ExecStart=/var/www/heandshepg-backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
 Restart=always
 RestartSec=3
 
