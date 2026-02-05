@@ -17,14 +17,11 @@ cd $APP_DIR
 # Clone or pull repository
 if [ -d ".git" ]; then
     echo "📥 Pulling latest code..."
-    git pull origin heandshepg-backend
+    git pull origin main
 else
     echo "📥 Cloning repository..."
     git clone $REPO_URL .
 fi
-
-# Navigate to Python directory
-cd Python
 
 # Create virtual environment
 echo "🐍 Setting up Python virtual environment..."
@@ -39,6 +36,7 @@ pip install -r requirements.txt
 # Run database migrations
 echo "🗄️ Running database migrations..."
 alembic upgrade head
+python run_migration.py
 
 # Restart the service
 echo "🔄 Restarting application service..."
