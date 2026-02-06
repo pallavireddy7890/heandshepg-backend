@@ -18,7 +18,7 @@ EXCEPTION
 END $$;
 
 DO $$ BEGIN
-    CREATE TYPE booking_status AS ENUM ('requested', 'accepted', 'paid', 'checked_in', 'active', 'completed', 'cancelled');
+    CREATE TYPE booking_status AS ENUM ('requested', 'accepted', 'paid', 'checked_in', 'active', 'completed', 'cancelled', 'vacate_requested', 'vacated');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
@@ -43,6 +43,18 @@ END $$;
 
 DO $$ BEGIN
     CREATE TYPE invoice_status AS ENUM ('pending', 'paid', 'overdue', 'cancelled');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE ticket_priority AS ENUM ('low', 'medium', 'high', 'urgent');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE ticket_status AS ENUM ('open', 'in_progress', 'resolved', 'closed');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
@@ -133,6 +145,27 @@ CREATE TABLE IF NOT EXISTS owners_profile (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Cities table
+CREATE TABLE IF NOT EXISTS cities (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) UNIQUE NOT NULL,
+    image_url TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    display_order VARCHAR(10) DEFAULT '0',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Areas table
+CREATE TABLE IF NOT EXISTS areas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    city_id UUID REFERENCES cities(id) ON DELETE CASCADE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    display_order VARCHAR(10) DEFAULT '0',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Properties table
 CREATE TABLE IF NOT EXISTS properties (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -141,13 +174,15 @@ CREATE TABLE IF NOT EXISTS properties (
     description TEXT,
     address TEXT NOT NULL,
     city VARCHAR(100) NOT NULL,
+    city_id UUID REFERENCES cities(id) ON DELETE SET NULL,
     locality VARCHAR(100),
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
     gender_preference gender_preference NOT NULL,
     amenities TEXT[],
-    monthly_rent INTEGER NOT NULL CHECK (monthly_rent >= 0),
-    deposit INTEGER NOT NULL CHECK (deposit >= 0),
+    monthly_rent INTEGER,
+    deposit INTEGER,
+    maintenance_charge INTEGER DEFAULT 0,
     rules TEXT,
     photos TEXT[],
     available_from DATE NOT NULL,
@@ -156,7 +191,7 @@ CREATE TABLE IF NOT EXISTS properties (
     instant_booking BOOLEAN DEFAULT FALSE,
     cancellation_policy TEXT,
     virtual_tour_url TEXT,
-    safety_score INTEGER CHECK (safety_score >= 0 AND safety_score <= 100),
+    safety_score INTEGER,
     nearby_amenities JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -167,10 +202,33 @@ CREATE TABLE IF NOT EXISTS rooms (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     property_id UUID REFERENCES properties(id) ON DELETE CASCADE NOT NULL,
     room_type VARCHAR(50) NOT NULL,
-    bed_count INTEGER NOT NULL CHECK (bed_count > 0),
-    price INTEGER NOT NULL CHECK (price >= 0),
+    floor_number INTEGER DEFAULT 1,
+    room_number VARCHAR(20),
+    bed_count INTEGER NOT NULL,
+    price INTEGER NOT NULL,  -- Legacy
+    deposit INTEGER,
+    security_deposit INTEGER,
+    monthly_price INTEGER,
+    daily_price INTEGER,
+    vacancy_count INTEGER DEFAULT 0,
     is_available BOOLEAN DEFAULT TRUE,
+    stay_type VARCHAR(20) DEFAULT 'monthly',
+    min_stay INTEGER DEFAULT 1,
+    is_extension_allowed BOOLEAN DEFAULT TRUE,
+    complementaries TEXT[],
     room_photos TEXT[],
+    room_description TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Room beds table
+CREATE TABLE IF NOT EXISTS room_beds (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    room_id UUID REFERENCES rooms(id) ON DELETE CASCADE NOT NULL,
+    bed_number VARCHAR(20),
+    status VARCHAR(20) DEFAULT 'available',
+    current_tenant_id UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -346,26 +404,7 @@ CREATE TABLE IF NOT EXISTS roommate_matches (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Cities table
-CREATE TABLE IF NOT EXISTS cities (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(100) UNIQUE NOT NULL,
-    image_url TEXT,
-    is_active BOOLEAN DEFAULT TRUE,
-    display_order VARCHAR(10) DEFAULT '0',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
 
--- Areas table
-CREATE TABLE IF NOT EXISTS areas (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    city_id UUID REFERENCES cities(id) ON DELETE CASCADE NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
-    display_order VARCHAR(10) DEFAULT '0',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
 
 -- Property comparisons table
 CREATE TABLE IF NOT EXISTS property_comparisons (
@@ -392,8 +431,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS system_settings (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     key VARCHAR(100) UNIQUE NOT NULL,
-    value JSONB NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    value TEXT,
+    description TEXT,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- ========== WALLET SYSTEM TABLES ==========

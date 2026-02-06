@@ -1,9 +1,11 @@
 import psycopg2
 import sys
+import os
 
 def migrate():
     try:
-        conn = psycopg2.connect("postgresql://postgres:suprgen123@localhost:5432/heandshepg_db")
+        database_url = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5432/heandshepg_db")
+        conn = psycopg2.connect(database_url)
         cur = conn.cursor()
         
         print("Adding target_audience column...")

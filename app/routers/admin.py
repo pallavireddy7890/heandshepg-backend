@@ -192,6 +192,11 @@ async def approve_owner_application(
     """Approve an owner application (admin only)."""
     from app.models import Notification
     from app.services.notification_service import NotificationService
+    from app.config import get_settings
+    from datetime import datetime
+    
+    settings = get_settings()
+    current_year = datetime.now().year
     
     application = db.query(OwnersProfile).filter(OwnersProfile.id == application_id).first()
     
@@ -263,7 +268,7 @@ async def approve_owner_application(
                         <li>📢 Send announcements to your tenants</li>
                     </ul>
                     <div style="text-align: center; margin: 30px 0;">
-                        <a href="http://localhost:8080/owner/dashboard" 
+                        <a href="{settings.frontend_url}/owner/dashboard" 
                            style="background: #f59e0b; color: white; padding: 15px 30px; 
                                   text-decoration: none; border-radius: 8px; font-weight: bold;
                                   display: inline-block;">
@@ -272,7 +277,7 @@ async def approve_owner_application(
                     </div>
                     <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
                     <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-                        © 2024 He&She PG. All rights reserved.
+                        © {current_year} He&She PG. All rights reserved.
                     </p>
                 </div>
             </body>
