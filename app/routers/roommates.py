@@ -86,19 +86,16 @@ class RoommateMatchResponse(BaseModel):
 
 # ========== Endpoints ==========
 
-@router.get("/profile", response_model=RoommateProfileResponse)
+@router.get("/profile", response_model=Optional[RoommateProfileResponse])
 async def get_my_roommate_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get current user's roommate profile."""
+    """Get current user's roommate profile. Returns null if no profile exists."""
     profile = db.query(RoommateProfile).filter(RoommateProfile.user_id == current_user.id).first()
     
     if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Roommate profile not found. Please create one first."
-        )
+        return None
     
     response = RoommateProfileResponse.model_validate(profile)
     user_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
