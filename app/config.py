@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     # Notification Settings
     notification_rate_limit_hours: int = 24  # Don't send duplicate confirmations within this period
     
-    # Debug - MUST be False in production
-    debug: bool = True
+    # Debug - Default is False for production safety
+    debug: bool = False
     
     class Config:
         env_file = ".env"
