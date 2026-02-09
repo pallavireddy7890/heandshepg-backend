@@ -1,28 +1,23 @@
+import os
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-from app.config import get_settings
+load_dotenv()
 
-settings = get_settings()
-
-# Add pool_pre_ping to handle stale connections and connect_args for timeout
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-    connect_args={"connect_timeout": 5}  # 5 second timeout
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Get DATABASE_URL and convert asyncpg to sync psycopg2 if needed
+DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and "asyncpg" in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 
 Base = declarative_base()
 
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
-    """Dependency to get database session."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
