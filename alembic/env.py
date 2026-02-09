@@ -4,6 +4,8 @@ from sqlalchemy import pool
 from alembic import context
 import sys
 from pathlib import Path
+import os
+from alembic import context
 
 # Add app to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -13,10 +15,14 @@ from app.config import get_settings
 from app.models import *  # Import all models
 
 config = context.config
+database_url = os.getenv("DATABASE_URL")
+if not database_url:
+    raise RuntimeError("DATABASE_URL is not set")
 
+config.set_main_option("sqlalchemy.url", database_url)
 # Get database URL from app settings
-settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# settings = get_settings()
+# config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
