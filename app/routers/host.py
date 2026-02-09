@@ -35,13 +35,26 @@ async def get_host_profile(
     ).count()
     
     # Calculate stats
-    # Years hosting - from first property creation date
+    # Years hosting - from profile.hosting_since if set, else from first property creation date
+    years_hosting = 0
+    
+    # Get first property for fallback calculations
     first_property = db.query(Property).filter(
         Property.owner_id == host_id
     ).order_by(Property.created_at.asc()).first()
     
-    years_hosting = 0
-    if first_property and first_property.created_at:
+    # First check if profile has hosting_since date set
+    if profile and hasattr(profile, 'hosting_since') and profile.hosting_since:
+        try:
+            from datetime import date
+            hosting_date = profile.hosting_since
+            if isinstance(hosting_date, date):
+                years_hosting = (datetime.utcnow().date() - hosting_date).days // 365
+        except Exception:
+            years_hosting = 0
+    
+    # Fallback to first property creation date
+    if years_hosting == 0 and first_property and first_property.created_at:
         try:
             created_date = first_property.created_at
             # Handle offset-aware datetime by converting to naive

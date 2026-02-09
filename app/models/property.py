@@ -85,6 +85,9 @@ class Room(Base):
     complementaries = Column(ARRAY(Text))
     room_photos = Column(ARRAY(Text))
     room_description = Column(Text)  # Room description (max 700 chars recommended)
+    area_sqft = Column(Integer)  # Room area in square feet
+    width_ft = Column(Integer)  # Room width in feet
+    has_ventilation = Column(Boolean, default=True)  # Whether room has ventilation
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -2,7 +2,7 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 from enum import Enum
 
 
@@ -197,6 +197,9 @@ class ProfileUpdate(BaseModel):
     # available_from: Optional[str] = None
     # available_to: Optional[str] = None
     # available_days: Optional[List[str]] = None
+    
+    # Hosting experience (for owners)
+    hosting_since: Optional[date] = None
 
 
 class ProfileResponse(ProfileBase):

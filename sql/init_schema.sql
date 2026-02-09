@@ -61,7 +61,7 @@ END $$;
 
 -- Users table (authentication)
 CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
     hashed_password VARCHAR(255) NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Profiles table
 CREATE TABLE IF NOT EXISTS profiles (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
     display_name VARCHAR(255),
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS profiles (
 
 -- User roles table
 CREATE TABLE IF NOT EXISTS user_roles (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     role app_role NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
 
 -- Owners profile table (KYC)
 CREATE TABLE IF NOT EXISTS owners_profile (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
     id_proof_url TEXT,
     property_documents TEXT[],
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS owners_profile (
 
 -- Cities table
 CREATE TABLE IF NOT EXISTS cities (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) UNIQUE NOT NULL,
     image_url TEXT,
     is_active BOOLEAN DEFAULT TRUE,
@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS cities (
 
 -- Areas table
 CREATE TABLE IF NOT EXISTS areas (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     city_id UUID REFERENCES cities(id) ON DELETE CASCADE NOT NULL,
     name VARCHAR(100) NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS areas (
 
 -- Properties table
 CREATE TABLE IF NOT EXISTS properties (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS properties (
 
 -- Rooms table
 CREATE TABLE IF NOT EXISTS rooms (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     property_id UUID REFERENCES properties(id) ON DELETE CASCADE NOT NULL,
     room_type VARCHAR(50) NOT NULL,
     floor_number INTEGER DEFAULT 1,
@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS rooms (
 
 -- Room beds table
 CREATE TABLE IF NOT EXISTS room_beds (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     room_id UUID REFERENCES rooms(id) ON DELETE CASCADE NOT NULL,
     bed_number VARCHAR(20),
     status VARCHAR(20) DEFAULT 'available',
@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS room_beds (
 
 -- Bookings table
 CREATE TABLE IF NOT EXISTS bookings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     property_id UUID REFERENCES properties(id) ON DELETE CASCADE NOT NULL,
     room_id UUID REFERENCES rooms(id) ON DELETE SET NULL,
     customer_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
@@ -255,7 +255,7 @@ CREATE TABLE IF NOT EXISTS bookings (
 
 -- Payments table
 CREATE TABLE IF NOT EXISTS payments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     amount INTEGER NOT NULL CHECK (amount >= 0),
@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS payments (
 
 -- Invoices table
 CREATE TABLE IF NOT EXISTS invoices (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     booking_id UUID REFERENCES bookings(id) ON DELETE CASCADE NOT NULL,
     month VARCHAR(7) NOT NULL,
@@ -287,7 +287,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 
 -- Conversations table
 CREATE TABLE IF NOT EXISTS conversations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     property_id UUID REFERENCES properties(id) ON DELETE CASCADE NOT NULL,
     customer_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     owner_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
@@ -297,7 +297,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 -- Messages table
 CREATE TABLE IF NOT EXISTS messages (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
     from_user UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     to_user UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
@@ -308,7 +308,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 -- Favorites table
 CREATE TABLE IF NOT EXISTS favorites (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     property_id UUID REFERENCES properties(id) ON DELETE CASCADE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -317,7 +317,7 @@ CREATE TABLE IF NOT EXISTS favorites (
 
 -- Reviews table
 CREATE TABLE IF NOT EXISTS reviews (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     property_id UUID REFERENCES properties(id) ON DELETE CASCADE NOT NULL,
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
@@ -331,7 +331,7 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 -- Notifications table
 CREATE TABLE IF NOT EXISTS notifications (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     title VARCHAR(255) NOT NULL,
     message TEXT NOT NULL,
@@ -343,7 +343,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 -- Referral codes table
 CREATE TABLE IF NOT EXISTS referral_codes (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
     code VARCHAR(20) UNIQUE NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
@@ -352,7 +352,7 @@ CREATE TABLE IF NOT EXISTS referral_codes (
 
 -- Referrals table
 CREATE TABLE IF NOT EXISTS referrals (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     referrer_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     referred_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     referral_code_id UUID REFERENCES referral_codes(id),
@@ -366,7 +366,7 @@ CREATE TABLE IF NOT EXISTS referrals (
 
 -- Roommate profiles table
 CREATE TABLE IF NOT EXISTS roommate_profiles (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
     -- Basic Info
     age INTEGER,
@@ -396,7 +396,7 @@ CREATE TABLE IF NOT EXISTS roommate_profiles (
 
 -- Roommate matches table
 CREATE TABLE IF NOT EXISTS roommate_matches (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     matched_user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     match_score DECIMAL(5,2),
@@ -408,7 +408,7 @@ CREATE TABLE IF NOT EXISTS roommate_matches (
 
 -- Property comparisons table
 CREATE TABLE IF NOT EXISTS property_comparisons (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
     property_ids UUID[] NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -416,7 +416,7 @@ CREATE TABLE IF NOT EXISTS property_comparisons (
 
 -- Audit logs table
 CREATE TABLE IF NOT EXISTS audit_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     action VARCHAR(100) NOT NULL,
     entity_type VARCHAR(100),
@@ -429,7 +429,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 -- System settings table
 CREATE TABLE IF NOT EXISTS system_settings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     key VARCHAR(100) UNIQUE NOT NULL,
     value TEXT,
     description TEXT,
@@ -454,7 +454,7 @@ END $$;
 
 -- Wallets table
 CREATE TABLE IF NOT EXISTS wallets (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE NOT NULL,
     balance INTEGER DEFAULT 0,
     pending_balance INTEGER DEFAULT 0,
@@ -465,7 +465,7 @@ CREATE TABLE IF NOT EXISTS wallets (
 
 -- Wallet transactions table
 CREATE TABLE IF NOT EXISTS wallet_transactions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     wallet_id UUID REFERENCES wallets(id) ON DELETE CASCADE NOT NULL,
     booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
     payer_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -484,7 +484,7 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
 
 -- Transaction OTPs table
 CREATE TABLE IF NOT EXISTS transaction_otps (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     transaction_id UUID REFERENCES wallet_transactions(id) ON DELETE CASCADE NOT NULL,
     otp_code VARCHAR(6) NOT NULL,
     otp_type VARCHAR(20) NOT NULL,

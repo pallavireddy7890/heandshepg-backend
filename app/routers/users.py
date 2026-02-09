@@ -70,6 +70,7 @@ async def get_profile(
         "dl_back_url": profile.dl_back_url,
         "college_company_id_url": profile.college_company_id_url,
         "profile_verification_status": profile.profile_verification_status,
+        "hosting_since": profile.hosting_since.isoformat() if profile.hosting_since else None,
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
     }

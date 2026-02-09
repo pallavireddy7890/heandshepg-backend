@@ -32,6 +32,9 @@ class RoomBase(BaseModel):
     complementaries: Optional[List[str]] = None
     room_photos: Optional[List[str]] = None
     room_description: Optional[str] = Field(None, max_length=700)
+    area_sqft: Optional[int] = Field(None, ge=0)
+    width_ft: Optional[int] = Field(None, ge=0)
+    has_ventilation: Optional[bool] = True
 
 
 class RoomCreate(RoomBase):
@@ -56,6 +59,9 @@ class RoomUpdate(BaseModel):
     complementaries: Optional[List[str]] = None
     room_photos: Optional[List[str]] = None
     room_description: Optional[str] = Field(None, max_length=700)
+    area_sqft: Optional[int] = Field(None, ge=0)
+    width_ft: Optional[int] = Field(None, ge=0)
+    has_ventilation: Optional[bool] = None
 
 
 class RoomResponse(RoomBase):
