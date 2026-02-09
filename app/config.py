@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,10 @@ class Settings(BaseSettings):
     
     # CORS
     frontend_url: str = "http://localhost:8080"
+    allowed_origins: List[str] = [
+        "https://heandshepg.com",
+        "https://www.heandshepg.com",
+    ]
     
     # Razorpay
     razorpay_key_id: str = ""

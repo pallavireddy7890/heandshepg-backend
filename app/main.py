@@ -105,20 +105,21 @@ if RATE_LIMITING_AVAILABLE and not settings.debug:
 # =========================
 # CORS Configuration
 # =========================
-origins = list(set(filter(None, [
-    # Local
+default_local_origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8080",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8080",
+]
 
-    # Production
-    "https://heandshepg.com",
-    "https://www.heandshepg.com",
-    settings.frontend_url,
-])))
+# Merge defaults with configured allowed origins
+origins = list(set(filter(None, 
+    default_local_origins + 
+    settings.allowed_origins + 
+    [settings.frontend_url]
+)))
 
 app.add_middleware(
     CORSMiddleware,
