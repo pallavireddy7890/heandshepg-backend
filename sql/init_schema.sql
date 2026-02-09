@@ -119,6 +119,8 @@ CREATE TABLE IF NOT EXISTS profiles (
     dl_back_url TEXT,
     college_company_id_url TEXT,
     profile_verification_status VARCHAR(20) DEFAULT 'pending',
+    -- Hosting experience
+    hosting_since DATE,
     -- Timestamps
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
