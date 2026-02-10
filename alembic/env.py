@@ -19,7 +19,10 @@ database_url = os.getenv("DATABASE_URL")
 if not database_url:
     raise RuntimeError("DATABASE_URL is not set")
 
-config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option(
+    "sqlalchemy.url",
+    os.environ.get("DATABASE_URL")
+)
 # Get database URL from app settings
 # settings = get_settings()
 # config.set_main_option("sqlalchemy.url", settings.database_url)
