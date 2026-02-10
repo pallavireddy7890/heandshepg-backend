@@ -76,6 +76,41 @@ async def lifespan(app: FastAPI):
     # Always ensure tables exist - safe to call even if tables already exist
     try:
         logger.info("Ensuring database tables exist...")
+        
+        # Create PostgreSQL enum types first (models use create_type=False)
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            enums = {
+                "gender_preference": ("male", "female", "mixed"),
+                "booking_status": ("requested", "accepted", "paid", "checked_in", "active", "completed", "cancelled", "vacate_requested", "vacated"),
+                "payment_status": ("pending", "completed", "failed", "refunded"),
+                "payment_type": ("booking", "monthly_rent", "refund", "commission"),
+                "invoice_status": ("pending", "paid", "overdue", "cancelled"),
+                "transaction_type": ("credit", "debit", "hold", "release"),
+                "transaction_status": ("pending", "otp_sent", "verified", "completed", "failed", "refunded"),
+            }
+            for enum_name, values in enums.items():
+                values_str = ", ".join(f"'{v}'" for v in values)
+                try:
+                    conn.execute(text(
+                        f"DO $$ BEGIN "
+                        f"CREATE TYPE {enum_name} AS ENUM ({values_str}); "
+                        f"EXCEPTION WHEN duplicate_object THEN NULL; "
+                        f"END $$;"
+                    ))
+                except Exception as e:
+                    logger.warning(f"Enum {enum_name} creation note: {e}")
+            conn.commit()
+            logger.info("PostgreSQL enum types ready")
+        
+        # Enable uuid-ossp extension
+        with engine.connect() as conn:
+            try:
+                conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
+                conn.commit()
+            except Exception:
+                pass
+        
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ready")
     except Exception as e:
