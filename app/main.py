@@ -15,6 +15,9 @@ from app.config import get_settings
 from app.database import engine, Base
 from app.database import SessionLocal
 
+# Import all models so Base.metadata.create_all() picks up every table
+import app.models  # noqa: F401
+
 from app.routers import (
     auth_router,
     users_router,
@@ -70,11 +73,16 @@ async def lifespan(app: FastAPI):
     """
     Startup & Shutdown logic
     """
-    if settings.debug:
-        logger.warning("DEBUG MODE: Auto creating DB tables")
+    # Always ensure tables exist - safe to call even if tables already exist
+    try:
+        logger.info("Ensuring database tables exist...")
         Base.metadata.create_all(bind=engine)
-    else:
-        logger.info("PRODUCTION MODE: Using Alembic migrations only")
+        logger.info("Database tables ready")
+    except Exception as e:
+        logger.error(f"Error creating database tables: {e}")
+        if not settings.debug:
+            logger.error("CRITICAL: Database tables could not be created in production!")
+        raise
 
     # Scheduler
     from app.scheduler import setup_scheduler
