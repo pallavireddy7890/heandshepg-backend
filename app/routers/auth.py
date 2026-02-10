@@ -1,6 +1,6 @@
 """Authentication router."""
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
@@ -51,8 +51,32 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            detail="Email already exists"
         )
+    
+    # Check if phone number already exists (in registered profiles)
+    if user_data.phone:
+        phone_clean = ''.join(c for c in user_data.phone.strip() if c.isdigit() or c == '+')
+        if phone_clean:
+            existing_profile = db.query(Profile).filter(Profile.phone == phone_clean).first()
+            if existing_profile:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number already exists"
+                )
+            
+            # Also check pending verifications (someone started signup but hasn't verified yet)
+            from app.models import EmailVerification as EV
+            pending_phone = db.query(EV).filter(
+                EV.phone == phone_clean,
+                EV.is_verified == False,
+                EV.expires_at > datetime.utcnow()
+            ).first()
+            if pending_phone and pending_phone.email != email_lower:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number already exists"
+                )
     
     # Create verification and send OTP
     verification, error = EmailVerificationService.create_verification(
@@ -108,6 +132,26 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
     
     # OTP verified - create the actual user account
     user_data = EmailVerificationService.get_verification_data(verification)
+    
+    # Double-check: prevent race condition where two users sign up with same email/phone simultaneously
+    existing_user = db.query(User).filter(User.email == user_data["email"]).first()
+    if existing_user:
+        db.delete(verification)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already exists"
+        )
+    
+    if user_data.get("phone"):
+        existing_profile = db.query(Profile).filter(Profile.phone == user_data["phone"]).first()
+        if existing_profile:
+            db.delete(verification)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number already exists"
+            )
     
     # Create user
     new_user = User(
