@@ -4,7 +4,7 @@ WORKDIR /app
 ARG CACHE_BUST=1
 
 # Set production environment
-ENV ENV=production
+ENV APP_ENV=production
 ENV DEBUG=False
 
 # Install dependencies

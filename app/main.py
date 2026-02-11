@@ -131,10 +131,10 @@ async def lifespan(app: FastAPI):
 # =========================
 # FastAPI App
 # =========================
-ENV = os.getenv("ENV", "production")
-print(f"[STARTUP] ENV={ENV}, DEBUG={settings.debug}")
+APP_ENV = os.getenv("APP_ENV", "production")
+print(f"[STARTUP] APP_ENV={APP_ENV}, DEBUG={settings.debug}")
 
-if ENV == "production":
+if APP_ENV == "production":
     app = FastAPI(
         docs_url=None,
         redoc_url=None,
@@ -159,7 +159,7 @@ if RATE_LIMITING_AVAILABLE and not settings.debug:
 # =========================
 # CORS Configuration
 # =========================
-if ENV == "production":
+if APP_ENV == "production":
     # Production: only allow configured origins, no localhost
     origins = list(set(filter(None,
         settings.allowed_origins +
