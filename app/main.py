@@ -131,12 +131,22 @@ async def lifespan(app: FastAPI):
 # =========================
 # FastAPI App
 # =========================
-app = FastAPI(
-    title="He&She PG API",
-    description="Backend API for He&She PG Booking Platform",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+ENV = os.getenv("ENV", "development")
+
+if ENV == "production":
+    app = FastAPI(
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+else:
+    app = FastAPI(
+        title="He&She PG API",
+        description="Backend API for He&She PG Booking Platform",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
 
 # =========================
 # Rate Limiter
@@ -148,21 +158,27 @@ if RATE_LIMITING_AVAILABLE and not settings.debug:
 # =========================
 # CORS Configuration
 # =========================
-default_local_origins = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://localhost:8080",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:8080",
-]
-
-# Merge defaults with configured allowed origins
-origins = list(set(filter(None, 
-    default_local_origins + 
-    settings.allowed_origins + 
-    [settings.frontend_url]
-)))
+if ENV == "production":
+    # Production: only allow configured origins, no localhost
+    origins = list(set(filter(None,
+        settings.allowed_origins +
+        [settings.frontend_url]
+    )))
+else:
+    # Development: include localhost origins for local testing
+    default_local_origins = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+    ]
+    origins = list(set(filter(None,
+        default_local_origins +
+        settings.allowed_origins +
+        [settings.frontend_url]
+    )))
 
 app.add_middleware(
     CORSMiddleware,
