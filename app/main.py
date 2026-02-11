@@ -132,6 +132,7 @@ async def lifespan(app: FastAPI):
 # FastAPI App
 # =========================
 ENV = os.getenv("ENV", "production")
+print(f"[STARTUP] ENV={ENV}, DEBUG={settings.debug}")
 
 if ENV == "production":
     app = FastAPI(
