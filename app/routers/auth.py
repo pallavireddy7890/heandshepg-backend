@@ -34,6 +34,38 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 settings = get_settings()
 
 
+def normalize_phone(phone: str) -> str:
+    """Normalize phone number to 10-digit format.
+    
+    Strips country code (+91 or 91) and non-digit characters
+    so that '6303348984' and '+916303348984' are treated identically.
+    """
+    if not phone:
+        return phone
+    # Remove all non-digit characters
+    digits = ''.join(c for c in phone.strip() if c.isdigit())
+    # Strip leading '91' if the result is 12 digits (country code + 10-digit number)
+    if len(digits) == 12 and digits.startswith('91'):
+        digits = digits[2:]
+    return digits
+
+
+def phone_variants(phone: str) -> list:
+    """Return all possible stored formats of a phone number.
+    
+    Handles existing DB records that may have +91 prefix or raw digits.
+    """
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return []
+    variants = [
+        normalized,            # 6303348984
+        f"+91{normalized}",    # +916303348984
+        f"91{normalized}",     # 916303348984
+    ]
+    return variants
+
+
 @router.post("/signup")
 async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
     """
@@ -56,9 +88,10 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
     
     # Check if phone number already exists (in registered profiles)
     if user_data.phone:
-        phone_clean = ''.join(c for c in user_data.phone.strip() if c.isdigit() or c == '+')
-        if phone_clean:
-            existing_profile = db.query(Profile).filter(Profile.phone == phone_clean).first()
+        phone_clean = normalize_phone(user_data.phone)
+        variants = phone_variants(user_data.phone)
+        if phone_clean and variants:
+            existing_profile = db.query(Profile).filter(Profile.phone.in_(variants)).first()
             if existing_profile:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -68,7 +101,7 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
             # Also check pending verifications (someone started signup but hasn't verified yet)
             from app.models import EmailVerification as EV
             pending_phone = db.query(EV).filter(
-                EV.phone == phone_clean,
+                EV.phone.in_(variants),
                 EV.is_verified == False,
                 EV.expires_at > datetime.utcnow()
             ).first()
@@ -85,7 +118,7 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
         name=user_data.name,
         password=user_data.password,
         role=user_data.role.value,
-        phone=user_data.phone
+        phone=normalize_phone(user_data.phone) if user_data.phone else None
     )
     
     if error and not verification:
@@ -144,7 +177,8 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
         )
     
     if user_data.get("phone"):
-        existing_profile = db.query(Profile).filter(Profile.phone == user_data["phone"]).first()
+        pv = phone_variants(user_data["phone"])
+        existing_profile = db.query(Profile).filter(Profile.phone.in_(pv)).first()
         if existing_profile:
             db.delete(verification)
             db.commit()
@@ -168,7 +202,7 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
         user_id=new_user.id,
         name=user_data["name"],
         email=user_data["email"],
-        phone=user_data.get("phone"),
+        phone=normalize_phone(user_data.get("phone")) if user_data.get("phone") else None,
     )
     db.add(profile)
     
@@ -299,11 +333,11 @@ async def login_json(login_data: UserLogin, db: Session = Depends(get_db)):
             )
     else:
         # Login by phone number - look up through profile
-        # Clean phone number (remove spaces, keep + and digits)
-        phone_clean = ''.join(c for c in identifier if c.isdigit() or c == '+')
+        # Normalize phone number and check all format variants
+        pv = phone_variants(identifier)
         
         # Try to find profile with this phone number
-        profile = db.query(Profile).filter(Profile.phone == phone_clean).first()
+        profile = db.query(Profile).filter(Profile.phone.in_(pv)).first() if pv else None
         if not profile:
             # Try without country code variations
             raise HTTPException(

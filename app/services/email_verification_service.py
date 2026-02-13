@@ -63,11 +63,36 @@ class EmailVerificationService:
         if not allowed:
             return None, error
         
-        # Delete any existing pending verifications for this email
-        db.query(EmailVerification).filter(
-            EmailVerification.email == email_lower
-        ).delete()
-        db.commit()
+        # Check if there's already a valid pending verification for this email
+        existing = db.query(EmailVerification).filter(
+            EmailVerification.email == email_lower,
+            EmailVerification.is_verified == False
+        ).first()
+        
+        if existing and not existing.is_expired():
+            # Already have a valid pending OTP — check cooldown (60s between sends)
+            seconds_since_created = (datetime.utcnow() - existing.created_at).total_seconds()
+            if seconds_since_created < 60:
+                return existing, None  # Return the existing record without sending a new email
+            # Still valid but past cooldown — update with fresh OTP and reset expiry
+            existing.otp_code = EmailVerificationService.generate_otp()
+            existing.expires_at = EmailVerification.get_expiry_time()
+            existing.created_at = datetime.utcnow()  # Reset cooldown timer
+            existing.attempts = 0
+            existing.name = name
+            existing.phone = phone
+            existing.hashed_password = get_password_hash(password)
+            db.commit()
+            db.refresh(existing)
+            logger.info(f"Updated existing verification for {email_lower} with new OTP: '{existing.otp_code}'")
+            # Send the new OTP email
+            EmailVerificationService.send_otp_email(email_lower, existing.otp_code, name)
+            return existing, None
+        
+        # Delete any expired/old verifications for this email
+        if existing:
+            db.delete(existing)
+            db.commit()
         
         # Generate OTP and hash password
         otp_code = EmailVerificationService.generate_otp()
@@ -198,7 +223,7 @@ If you didn't request this verification, please ignore this email.
         
         if not verification:
             logger.warning(f"No pending verification found for email: {email_lower}")
-            return None, "No pending verification found. Please sign up again."
+            return None, "No pending verification found. Your OTP may have expired or you may have already verified. Please go back and sign up again to receive a new code."
         
         logger.info(f"Found verification record - stored OTP: '{verification.otp_code}', attempts: {verification.attempts}")
         
@@ -207,12 +232,12 @@ If you didn't request this verification, please ignore this email.
             logger.warning(f"OTP expired for email: {email_lower}")
             db.delete(verification)
             db.commit()
-            return None, "OTP has expired. Please request a new one."
+            return None, "Your verification code has expired (valid for 10 minutes only). Please go back and sign up again to receive a new code."
         
         # Check if max attempts exceeded
         if verification.has_max_attempts():
             logger.warning(f"Max attempts reached for email: {email_lower}")
-            return None, "Too many failed attempts. Please request a new OTP."
+            return None, "Too many incorrect attempts. Please go back and sign up again to receive a fresh code."
         
         # Clean the stored OTP for comparison
         stored_otp_clean = str(verification.otp_code).strip() if verification.otp_code else ""
@@ -224,9 +249,9 @@ If you didn't request this verification, please ignore this email.
             db.commit()
             remaining = EmailVerification.MAX_ATTEMPTS - verification.attempts
             if remaining > 0:
-                return None, f"Invalid OTP. {remaining} attempts remaining."
+                return None, f"Incorrect verification code. You have {remaining} {'attempt' if remaining == 1 else 'attempts'} remaining. Please check your latest email for the correct code."
             else:
-                return None, "Too many failed attempts. Please request a new OTP."
+                return None, "Too many incorrect attempts. Please go back and sign up again to receive a fresh code."
         
         logger.info(f"OTP verified successfully for email: {email_lower}")
         

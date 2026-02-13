@@ -127,6 +127,11 @@ async def update_profile(
         old_sms_notifications is not True
     )
     
+    # Normalize phone number if provided
+    if 'phone' in update_data and update_data['phone']:
+        from app.routers.auth import normalize_phone
+        update_data['phone'] = normalize_phone(update_data['phone'])
+    
     # Apply updates to profile
     for field, value in update_data.items():
         setattr(profile, field, value)
