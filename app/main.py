@@ -167,7 +167,7 @@ origins = list(set(filter(None, [
     "http://127.0.0.1:5173",
     "http://localhost:*",
 
-    # Production
+    # Production origins
     "https://heandshepg.com",
     "https://www.heandshepg.com",
     settings.frontend_url,
@@ -175,7 +175,7 @@ origins = list(set(filter(None, [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
