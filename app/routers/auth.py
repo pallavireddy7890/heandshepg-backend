@@ -127,11 +127,17 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
             detail=error
         )
     
+    phone_clean = normalize_phone(user_data.phone) if user_data.phone else None
+    msg = "Verification OTP sent to your email"
+    if phone_clean:
+        msg += " and phone number"
+    
     return {
-        "message": "Verification OTP sent to your email",
+        "message": msg,
         "email": email_lower,
         "expires_in_minutes": EmailVerification.OTP_EXPIRY_MINUTES,
-        "requires_verification": True
+        "requires_verification": True,
+        "sms_sent": bool(phone_clean)
     }
 
 
@@ -269,7 +275,7 @@ async def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
         )
     
     return {
-        "message": "New verification OTP sent to your email",
+        "message": "New verification OTP sent to your email and phone number",
         "email": data.email.lower().strip(),
         "expires_in_minutes": EmailVerification.OTP_EXPIRY_MINUTES
     }

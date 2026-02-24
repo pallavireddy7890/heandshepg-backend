@@ -87,6 +87,9 @@ class EmailVerificationService:
             logger.info(f"Updated existing verification for {email_lower} with new OTP: '{existing.otp_code}'")
             # Send the new OTP email
             EmailVerificationService.send_otp_email(email_lower, existing.otp_code, name)
+            # Also send OTP via SMS if phone number is available
+            if phone:
+                EmailVerificationService.send_otp_sms(phone, existing.otp_code, name)
             return existing, None
         
         # Delete any expired/old verifications for this email
@@ -131,6 +134,10 @@ class EmailVerificationService:
             logger.error(f"Failed to send OTP email to {email_lower}: {email_error}")
             # Don't delete the verification - user can retry
             return verification, f"Failed to send verification email: {email_error}"
+        
+        # Also send OTP via SMS if phone number is available
+        if phone:
+            EmailVerificationService.send_otp_sms(phone, otp_code, name)
         
         logger.info(f"Verification OTP sent to {email_lower}")
         return verification, None
@@ -196,6 +203,19 @@ If you didn't request this verification, please ignore this email.
         """
         
         return NotificationService.send_email(email, subject, body_html, body_text)
+    
+    @staticmethod
+    def send_otp_sms(phone: str, otp_code: str, name: str) -> Tuple[bool, Optional[str]]:
+        """Send OTP verification code via SMS."""
+        message = f"He&She PG: Hi {name or 'there'}, your verification code is {otp_code}. Valid for 10 minutes. Do not share this code."
+        
+        success, error = NotificationService.send_sms(phone, message)
+        if success:
+            logger.info(f"OTP SMS sent successfully to {phone}")
+        else:
+            logger.warning(f"Failed to send OTP SMS to {phone}: {error}")
+        
+        return success, error
     
     @staticmethod
     def verify_otp(
@@ -299,6 +319,10 @@ If you didn't request this verification, please ignore this email.
         
         if not success:
             return False, f"Failed to send verification email: {email_error}"
+        
+        # Also send OTP via SMS if phone number is available
+        if verification.phone:
+            EmailVerificationService.send_otp_sms(verification.phone, new_otp, verification.name)
         
         logger.info(f"Resent verification OTP to {email_lower}")
         return True, None
