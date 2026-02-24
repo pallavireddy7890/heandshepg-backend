@@ -443,13 +443,13 @@ CREATE TABLE IF NOT EXISTS system_settings (
 
 -- Create wallet enum types
 DO $$ BEGIN
-    CREATE TYPE transaction_type AS ENUM ('credit', 'debit', 'hold', 'release');
+    CREATE TYPE transaction_type AS ENUM ('credit', 'debit', 'hold', 'release', 'withdrawal');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
 DO $$ BEGIN
-    CREATE TYPE transaction_status AS ENUM ('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded');
+    CREATE TYPE transaction_status AS ENUM ('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded', 'rejected');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
@@ -477,6 +477,10 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
     status transaction_status DEFAULT 'pending',
     otp_verified BOOLEAN DEFAULT FALSE,
     otp_verified_at TIMESTAMP WITH TIME ZONE,
+    bank_account_number VARCHAR(50),
+    bank_ifsc_code VARCHAR(20),
+    bank_name VARCHAR(255),
+    admin_notes TEXT,
     razorpay_payment_id VARCHAR(255),
     razorpay_order_id VARCHAR(255),
     description TEXT,

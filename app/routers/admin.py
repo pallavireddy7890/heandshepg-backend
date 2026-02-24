@@ -9,7 +9,7 @@ from sqlalchemy import func
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Profile, UserRole, OwnersProfile, AuditLog, SystemSettings, AppRole, KycStatus
+from app.models import User, Profile, UserRole, OwnersProfile, AuditLog, SystemSettings, AppRole, KycStatus, WalletTransaction, TransactionType, TransactionStatus
 from app.utils.security import get_current_user, require_role
 
 require_admin = require_role("admin")
@@ -84,6 +84,27 @@ class SystemSettingResponse(BaseModel):
 
 class SystemSettingUpdate(BaseModel):
     value: str
+
+
+class PayoutRequestResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    owner_name: Optional[str]
+    amount: float
+    bank_account_number: Optional[str]
+    bank_ifsc_code: Optional[str]
+    bank_name: Optional[str]
+    status: str
+    description: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PayoutProcessRequest(BaseModel):
+    status: str  # completed, rejected
+    admin_notes: Optional[str] = None
 
 
 # ========== Audit Logs ==========
@@ -1070,6 +1091,94 @@ async def initiate_refund(
         "refund_amount": refund_amount,
         "razorpay_refund_id": razorpay_refund_id,
     }
+
+
+# ========== Payout Management ==========
+
+@router.get("/payout-requests", response_model=List[PayoutRequestResponse], dependencies=[Depends(require_admin)])
+async def list_payout_requests(
+    db: Session = Depends(get_db),
+    status_filter: Optional[str] = None,
+    skip: int = 0,
+    limit: int = Query(default=50, le=100),
+):
+    """List all payout (withdrawal) requests (admin only)."""
+    query = db.query(WalletTransaction).filter(
+        WalletTransaction.transaction_type == TransactionType.withdrawal
+    )
+    
+    if status_filter:
+        query = query.filter(WalletTransaction.status == status_filter)
+    
+    requests = query.order_by(WalletTransaction.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result = []
+    for req in requests:
+        profile = db.query(Profile).filter(Profile.user_id == req.receiver_id).first()
+        
+        result.append(PayoutRequestResponse(
+            id=req.id,
+            user_id=req.receiver_id,
+            owner_name=profile.name if profile else "Unknown Owner",
+            amount=req.amount / 100,  # Convert paise to INR
+            bank_account_number=req.bank_account_number,
+            bank_ifsc_code=req.bank_ifsc_code,
+            bank_name=req.bank_name,
+            status=req.status.value if hasattr(req.status, 'value') else req.status,
+            description=req.description,
+            created_at=req.created_at
+        ))
+    
+    return result
+
+
+@router.post("/payout-requests/{transaction_id}/process", dependencies=[Depends(require_admin)])
+async def process_payout_request(
+    transaction_id: UUID,
+    process_data: PayoutProcessRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Approve or reject a payout request (admin only)."""
+    from app.services.wallet_service import WalletService
+    
+    try:
+        new_status = TransactionStatus(process_data.status)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status. Must be 'completed' or 'rejected'"
+        )
+    
+    if new_status not in [TransactionStatus.completed, TransactionStatus.rejected]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Status must be either 'completed' or 'rejected'"
+        )
+        
+    success, message = WalletService.process_withdrawal(
+        db=db,
+        transaction_id=transaction_id,
+        new_status=new_status,
+        admin_notes=process_data.admin_notes
+    )
+    
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    
+    # Create audit log
+    create_audit_log(
+        db=db,
+        user_id=current_user.id,
+        action=f"payout_{new_status.value}",
+        entity_type="wallet_transaction",
+        entity_id=transaction_id,
+        details=f"Processed payout request. Status: {new_status.value}. Admin Notes: {process_data.admin_notes or 'None'}",
+        ip_address=request.client.host if request.client else None,
+    )
+    
+    return {"success": True, "message": message}
 
 
 # ========== Asset Management ==========

@@ -233,7 +233,7 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
     if role_to_assign == AppRole.owner:
         try:
             from app.utils.notifications import notify_admins_owner_signup
-            notify_admins_owner_signup(db, user_data["name"], user_data["email"])
+            await notify_admins_owner_signup(db, user_data["name"], user_data["email"])
         except Exception:
             pass  # Don't fail signup if notification fails
     

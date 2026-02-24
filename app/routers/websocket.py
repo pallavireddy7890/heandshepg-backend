@@ -51,6 +51,7 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+notification_manager = ConnectionManager()
 
 
 @router.websocket("/ws/chat/{user_id}")
@@ -109,6 +110,38 @@ async def websocket_chat(
         manager.disconnect(websocket, user_id)
     except Exception as e:
         manager.disconnect(websocket, user_id)
+
+
+@router.websocket("/ws/notifications/{user_id}")
+async def websocket_notifications(
+    websocket: WebSocket,
+    user_id: str,
+    token: str = Query(...),
+):
+    """WebSocket endpoint for real-time notifications."""
+    from app.utils.security import decode_access_token
+    
+    # Verify token
+    try:
+        payload = decode_access_token(token)
+        if not payload or payload.get("sub") != user_id:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+    except Exception:
+        await websocket.close(code=4001, reason="Authentication failed")
+        return
+    
+    await notification_manager.connect(websocket, user_id)
+    
+    try:
+        while True:
+            # Notifications are primarily server-to-client, 
+            # but we need to keep the connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        notification_manager.disconnect(websocket, user_id)
+    except Exception:
+        notification_manager.disconnect(websocket, user_id)
 
 
 async def handle_send_message(db: Session, from_user_id: str, message_data: dict, manager: ConnectionManager):

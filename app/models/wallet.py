@@ -14,6 +14,7 @@ class TransactionType(str, enum.Enum):
     debit = "debit"
     hold = "hold"
     release = "release"
+    withdrawal = "withdrawal"
 
 
 class TransactionStatus(str, enum.Enum):
@@ -23,6 +24,7 @@ class TransactionStatus(str, enum.Enum):
     completed = "completed"
     failed = "failed"
     refunded = "refunded"
+    rejected = "rejected"
 
 
 class Wallet(Base):
@@ -57,10 +59,18 @@ class WalletTransaction(Base):
     # Transaction details
     amount = Column(Integer, nullable=False)  # Amount in paise
     payment_type = Column(String(20), default='total')  # 'rent', 'deposit', 'total', 'maintenance'
-    transaction_type = Column(ENUM('credit', 'debit', 'hold', 'release', 
+    transaction_type = Column(ENUM('credit', 'debit', 'hold', 'release', 'withdrawal',
                                    name='transaction_type', create_type=False), nullable=False)
-    status = Column(ENUM('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded',
+    status = Column(ENUM('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded', 'rejected',
                          name='transaction_status', create_type=False), default='pending')
+    
+    # Withdrawal details (snapshots of bank details at time of request)
+    bank_account_number = Column(String(50))
+    bank_ifsc_code = Column(String(20))
+    bank_name = Column(String(255))
+    
+    # Admin notes/Rejection reason
+    admin_notes = Column(Text)
     
     # OTP verification
     otp_verified = Column(Boolean, default=False)

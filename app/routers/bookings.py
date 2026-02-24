@@ -368,7 +368,7 @@ async def create_booking(
     
     # Notify owner about new booking request
     try:
-        notify_booking_created(db, property.owner_id, customer_name, property.title, new_booking.id)
+        await notify_booking_created(db, property.owner_id, customer_name, property.title, new_booking.id)
     except Exception:
         pass  # Don't fail booking if notification fails
     
@@ -439,9 +439,9 @@ async def update_booking_status(
         property_title = property.title if property else "Property"
         
         if new_status == "accepted":
-            notify_booking_accepted(db, booking.customer_id, property_title, booking.id)
+            await notify_booking_accepted(db, booking.customer_id, property_title, booking.id)
         elif new_status in ["cancelled", "rejected"]:
-            notify_booking_rejected(db, booking.customer_id, property_title)
+            await notify_booking_rejected(db, booking.customer_id, property_title)
     except Exception:
         pass  # Don't fail status update if notification fails
     
@@ -543,7 +543,7 @@ async def request_vacate(
     # Notify owner about vacate request
     try:
         from app.utils.notifications import create_notification
-        create_notification(
+        await create_notification(
             db=db,
             user_id=booking.owner_id,
             title="Vacate Request",

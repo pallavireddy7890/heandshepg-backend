@@ -358,6 +358,84 @@ class WalletService:
         
         return result
 
+    @staticmethod
+    def create_withdrawal_request(
+        db: Session,
+        user_id: UUID,
+        amount: int,
+    ) -> Tuple[bool, str, Optional[WalletTransaction]]:
+        """Create a withdrawal request for an owner."""
+        # Get user wallet
+        wallet = WalletService.get_or_create_wallet(db, user_id)
+        
+        # Check available balance (amount is in paise)
+        available_balance = wallet.balance - wallet.pending_balance
+        if available_balance < amount:
+            return False, "Insufficient available balance", None
+        
+        # Get bank details from profile
+        profile = db.query(Profile).filter(Profile.user_id == user_id).first()
+        if not profile or not profile.bank_account_number or not profile.bank_ifsc_code:
+            return False, "Please provide bank details in your profile before requesting withdrawal", None
+            
+        # Create transaction record
+        transaction = WalletTransaction(
+            wallet_id=wallet.id,
+            payer_id=None, # System/Internal
+            receiver_id=user_id,
+            amount=amount,
+            transaction_type=TransactionType.withdrawal,
+            status=TransactionStatus.pending,
+            bank_account_number=profile.bank_account_number,
+            bank_ifsc_code=profile.bank_ifsc_code,
+            bank_name=profile.bank_name,
+            description=f"Withdrawal request for Rs.{amount/100:.2f}"
+        )
+        db.add(transaction)
+        
+        # Hold the amount in pending_balance
+        wallet.pending_balance += amount
+        
+        db.commit()
+        db.refresh(transaction)
+        
+        return True, "Withdrawal request submitted successfully", transaction
+
+    @staticmethod
+    def process_withdrawal(
+        db: Session,
+        transaction_id: UUID,
+        new_status: TransactionStatus, # completed or rejected
+        admin_notes: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Process a withdrawal request by admin."""
+        transaction = db.query(WalletTransaction).filter(
+            WalletTransaction.id == transaction_id,
+            WalletTransaction.transaction_type == TransactionType.withdrawal
+        ).first()
+        
+        if not transaction or transaction.status != TransactionStatus.pending:
+            return False, "Invalid withdrawal request or already processed"
+            
+        wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
+        if not wallet:
+            return False, "Wallet not found"
+        
+        if new_status == TransactionStatus.completed:
+            # Deduct from both balance and pending_balance
+            wallet.balance -= transaction.amount
+            wallet.pending_balance = max(0, wallet.pending_balance - transaction.amount)
+            transaction.status = TransactionStatus.completed
+        elif new_status == TransactionStatus.rejected:
+            # Release from pending_balance back to available
+            wallet.pending_balance = max(0, wallet.pending_balance - transaction.amount)
+            transaction.status = TransactionStatus.rejected
+            
+        transaction.admin_notes = admin_notes
+        db.commit()
+        
+        return True, f"Withdrawal request {new_status.value} successfully"
+
 
 # Convenience instance
 wallet_service = WalletService()

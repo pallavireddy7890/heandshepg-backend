@@ -60,6 +60,10 @@ class ResendOTPRequest(BaseModel):
     transaction_id: str
 
 
+class WithdrawRequest(BaseModel):
+    amount: float  # Amount in INR
+
+
 # ========== Endpoints ==========
 
 @router.get("/balance", response_model=WalletBalanceResponse)
@@ -293,7 +297,7 @@ async def verify_razorpay_payment(
     
     # Notify owner about incoming payment (optional - won't fail if notification fails)
     try:
-        notify_payment_received(db, transaction.receiver_id, transaction.amount / 100, customer_name)
+        await notify_payment_received(db, transaction.receiver_id, transaction.amount / 100, customer_name)
     except Exception:
         pass  # Don't fail payment if notification fails
     
@@ -419,11 +423,11 @@ async def verify_transaction_otp(
                 if owner_profile:
                     owner_name = owner_profile.name
         
-        notify_payment_verified(db, transaction.payer_id, transaction.amount / 100, property_title)
+        await notify_payment_verified(db, transaction.payer_id, transaction.amount / 100, property_title)
         
         # Notify admins about completed payment
         from app.utils.notifications import notify_admins_payment_completed
-        notify_admins_payment_completed(db, customer_name, owner_name, transaction.amount / 100, property_title)
+        await notify_admins_payment_completed(db, customer_name, owner_name, transaction.amount / 100, property_title)
     except Exception:
         pass  # Don't fail if notification fails
     
@@ -487,4 +491,34 @@ async def resend_transaction_otp(
         "owner_name": owner_name,
         "amount": transaction.amount / 100,
         "expires_in_minutes": WalletService.OTP_EXPIRY_MINUTES
+    }
+
+
+@router.post("/withdraw")
+async def request_withdrawal(
+    request: WithdrawRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Request a withdrawal from owner's wallet."""
+    # Amount in paise
+    amount_paise = int(request.amount * 100)
+    
+    if amount_paise <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid amount")
+        
+    success, message, transaction = WalletService.create_withdrawal_request(
+        db=db,
+        user_id=current_user.id,
+        amount=amount_paise
+    )
+    
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+        
+    return {
+        "success": True,
+        "message": message,
+        "transaction_id": str(transaction.id),
+        "amount": request.amount
     }

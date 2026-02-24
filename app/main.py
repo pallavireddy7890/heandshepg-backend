@@ -38,6 +38,7 @@ from app.routers.websocket import router as websocket_router
 from app.routers.cities import router as cities_router
 from app.routers.announcements import router as announcements_router
 from app.routers.host import router as host_router
+from app.routers.upload_photos import router as upload_photos_router
 
 # =========================
 # Settings & Logging
@@ -235,6 +236,7 @@ app.include_router(websocket_router, prefix="/api")
 app.include_router(cities_router, prefix="/api")
 app.include_router(announcements_router)
 app.include_router(host_router, prefix="/api")
+app.include_router(upload_photos_router, prefix="/api")
 
 # =========================
 # Static Uploads

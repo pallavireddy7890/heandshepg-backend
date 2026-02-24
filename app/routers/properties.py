@@ -98,11 +98,18 @@ async def get_property(
     
     response = PropertyDetailResponse.model_validate(property)
     response.rooms = [RoomResponse.model_validate(r) for r in rooms]
+    
+    # Mask bank account number
+    masked_account = "********" + owner_profile.bank_account_number[-4:] if owner_profile and owner_profile.bank_account_number and len(owner_profile.bank_account_number) > 4 else owner_profile.bank_account_number if owner_profile else None
+
     response.owner_profile = {
         "name": owner_profile.name if owner_profile else "Owner",
         "phone": owner_profile.phone if owner_profile else None,
         "profile_photo": owner_profile.profile_photo if owner_profile else None,
         "languages_known": owner_profile.languages_known if owner_profile else None,
+        "bank_name": owner_profile.bank_name if owner_profile else None,
+        "bank_account_masked": masked_account,
+        "bank_ifsc_code": owner_profile.bank_ifsc_code if owner_profile else None,
     }
     response.average_rating = float(review_stats.avg_rating) if review_stats.avg_rating else None
     response.review_count = review_stats.count or 0

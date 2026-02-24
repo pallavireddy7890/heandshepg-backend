@@ -63,8 +63,8 @@ def init_db():
             ("invoice_status", ['pending', 'paid', 'overdue', 'cancelled']),
             ("ticket_priority", ['low', 'medium', 'high', 'urgent']),
             ("ticket_status", ['open', 'in_progress', 'resolved', 'closed']),
-            ("transaction_type", ['credit', 'debit', 'hold', 'release']),
-            ("transaction_status", ['pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded']),
+            ("transaction_type", ['credit', 'debit', 'hold', 'release', 'withdrawal']),
+            ("transaction_status", ['pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded', 'rejected']),
         ]
         
         for enum_name, values in enums:

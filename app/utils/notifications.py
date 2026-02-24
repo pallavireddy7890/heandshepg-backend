@@ -4,7 +4,7 @@ from app.models import Notification
 import uuid
 
 
-def create_notification(
+async def create_notification(
     db: Session,
     user_id: uuid.UUID,
     title: str,
@@ -15,20 +15,7 @@ def create_notification(
     reference_type: str = None
 ) -> Notification:
     """
-    Create a notification for a user.
-    
-    Args:
-        db: Database session
-        user_id: UUID of the user to notify
-        title: Notification title
-        message: Notification message
-        notification_type: Type of notification (info, success, warning, booking, payment, vacate_request)
-        link: Optional link to navigate to when clicked
-        reference_id: Optional reference ID (e.g., booking_id)
-        reference_type: Optional reference type (e.g., "booking")
-    
-    Returns:
-        Created notification object
+    Create a notification for a user and broadcast via WebSocket.
     """
     notification = Notification(
         id=uuid.uuid4(),
@@ -42,38 +29,55 @@ def create_notification(
     db.add(notification)
     db.commit()
     db.refresh(notification)
+    
+    # Broadcast via WebSocket
+    try:
+        from app.routers.websocket import notification_manager
+        await notification_manager.send_personal_message({
+            "type": "notification",
+            "id": str(notification.id),
+            "title": notification.title,
+            "message": notification.message,
+            "notification_type": notification.type,
+            "link": notification.link,
+            "created_at": notification.created_at.isoformat() if notification.created_at else None
+        }, str(user_id))
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to broadcast notification: {e}")
+        
     return notification
 
 
-def notify_vacate_request(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
+async def notify_vacate_request(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
     """Notify owner when a tenant requests to vacate."""
-    return create_notification(
+    return await create_notification(
         db=db,
         user_id=owner_id,
         title="🏠 Vacate Request",
         message=f"{customer_name} has requested to vacate from {property_title}. Please review and process their checkout.",
         notification_type="vacate_request",
-        link="/owner/bookings",
+        link="/owner/bookings?tab=requests",
         reference_id=str(booking_id),
         reference_type="booking"
     )
 
 
-def notify_booking_created(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
+async def notify_booking_created(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
     """Notify owner when a new booking is created."""
-    return create_notification(
+    return await create_notification(
         db=db,
         user_id=owner_id,
         title="New Booking Request",
         message=f"{customer_name} has requested to book {property_title}",
         notification_type="booking",
-        link=f"/owner/bookings"
+        link="/owner/bookings?tab=requests"
     )
 
 
-def notify_booking_accepted(db: Session, customer_id: uuid.UUID, property_title: str, booking_id: uuid.UUID):
+async def notify_booking_accepted(db: Session, customer_id: uuid.UUID, property_title: str, booking_id: uuid.UUID):
     """Notify customer when their booking is accepted."""
-    return create_notification(
+    return await create_notification(
         db=db,
         user_id=customer_id,
         title="Booking Accepted!",
@@ -83,9 +87,9 @@ def notify_booking_accepted(db: Session, customer_id: uuid.UUID, property_title:
     )
 
 
-def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_title: str):
+async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_title: str):
     """Notify customer when their booking is rejected."""
-    return create_notification(
+    return await create_notification(
         db=db,
         user_id=customer_id,
         title="Booking Declined",
@@ -95,9 +99,9 @@ def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_title:
     )
 
 
-def notify_payment_received(db: Session, owner_id: uuid.UUID, amount: float, customer_name: str):
+async def notify_payment_received(db: Session, owner_id: uuid.UUID, amount: float, customer_name: str):
     """Notify owner when a payment is received."""
-    return create_notification(
+    return await create_notification(
         db=db,
         user_id=owner_id,
         title="Payment Received",
@@ -107,9 +111,9 @@ def notify_payment_received(db: Session, owner_id: uuid.UUID, amount: float, cus
     )
 
 
-def notify_payment_verified(db: Session, customer_id: uuid.UUID, amount: float, property_title: str):
+async def notify_payment_verified(db: Session, customer_id: uuid.UUID, amount: float, property_title: str):
     """Notify customer when their payment is verified."""
-    return create_notification(
+    return await create_notification(
         db=db,
         user_id=customer_id,
         title="Payment Verified",
@@ -119,13 +123,13 @@ def notify_payment_verified(db: Session, customer_id: uuid.UUID, amount: float, 
     )
 
 
-def notify_new_message(db: Session, user_id: uuid.UUID, sender_name: str, property_title: str = None):
+async def notify_new_message(db: Session, user_id: uuid.UUID, sender_name: str, property_title: str = None):
     """Notify user when they receive a new message."""
     message_text = f"New message from {sender_name}"
     if property_title:
         message_text += f" regarding {property_title}"
     
-    return create_notification(
+    return await create_notification(
         db=db,
         user_id=user_id,
         title="New Message",
@@ -142,25 +146,25 @@ def get_admin_user_ids(db: Session) -> list:
     return [role.user_id for role in admin_roles]
 
 
-def notify_admins_owner_signup(db: Session, owner_name: str, owner_email: str):
+async def notify_admins_owner_signup(db: Session, owner_name: str, owner_email: str):
     """Notify all admins when a new owner signs up."""
     admin_ids = get_admin_user_ids(db)
     for admin_id in admin_ids:
-        create_notification(
+        await create_notification(
             db=db,
             user_id=admin_id,
             title="🏢 New Owner Registration",
             message=f"New owner registered: {owner_name} ({owner_email}). Review their application in the admin dashboard.",
             notification_type="info",
-            link="/admin"
+            link="/admin?tab=applications"
         )
 
 
-def notify_admins_payment_completed(db: Session, customer_name: str, owner_name: str, amount: float, property_title: str):
+async def notify_admins_payment_completed(db: Session, customer_name: str, owner_name: str, amount: float, property_title: str):
     """Notify all admins when a payment is completed."""
     admin_ids = get_admin_user_ids(db)
     for admin_id in admin_ids:
-        create_notification(
+        await create_notification(
             db=db,
             user_id=admin_id,
             title="💰 Payment Completed",
