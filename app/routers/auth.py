@@ -34,19 +34,38 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 settings = get_settings()
 
 
+@router.get("/debug-sms")
+async def debug_sms():
+    """Diagnostic endpoint to check if SMS settings are loaded."""
+    return {
+        "twilio_configured": bool(settings.twilio_account_sid and settings.twilio_auth_token and settings.twilio_from_number),
+        "account_sid_prefix": settings.twilio_account_sid[:5] if settings.twilio_account_sid else None,
+        "from_number": settings.twilio_from_number,
+        "debug_mode": settings.debug
+    }
+
+
 def normalize_phone(phone: str) -> str:
-    """Normalize phone number to 10-digit format.
+    """Normalize phone number to a clean digit format.
     
-    Strips country code (+91 or 91) and non-digit characters
-    so that '6303348984' and '+916303348984' are treated identically.
+    1. Removes all non-digit characters.
+    2. Strips leading '0' (common in domestic formats).
+    3. Strips leading '91' if the result is 12 digits (Indian country code).
+    4. Ensures we return the most likely 10-digit mobile number for India.
     """
     if not phone:
-        return phone
+        return ""
     # Remove all non-digit characters
     digits = ''.join(c for c in phone.strip() if c.isdigit())
-    # Strip leading '91' if the result is 12 digits (country code + 10-digit number)
+    
+    # Strip leading zero
+    if digits.startswith('0'):
+        digits = digits[1:]
+        
+    # Strip leading '91' if it looks like an Indian country code + 10-digit number
     if len(digits) == 12 and digits.startswith('91'):
         digits = digits[2:]
+        
     return digits
 
 
@@ -235,6 +254,27 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
     db.refresh(new_user)
     db.refresh(profile)
     
+    # Create welcome notification for user (Omnichannel: Web, Email, SMS)
+    try:
+        from app.utils.notifications import create_notification
+        welcome_title = "🎉 Welcome to He&She PG!"
+        welcome_msg = f"Hi {user_data['name']}, welcome to He&She PG! Explore our platform to find the best PG accommodations."
+        if role_to_assign == AppRole.owner:
+            welcome_msg = f"Hi {user_data['name']}, welcome to He&She PG! Please complete your KYC details in the profile to start listing your properties."
+            
+        await create_notification(
+            db=db,
+            user_id=new_user.id,
+            title=welcome_title,
+            message=welcome_msg,
+            notification_type="info",
+            link="/profile",
+            send_external=True
+        )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send welcome notification: {e}")
+        
     # Notify admins if a new owner signed up
     if role_to_assign == AppRole.owner:
         try:

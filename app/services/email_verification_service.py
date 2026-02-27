@@ -137,7 +137,10 @@ class EmailVerificationService:
         
         # Also send OTP via SMS if phone number is available
         if phone:
+            print(f"DEBUG: Attempting to send SMS to {phone} for {email_lower}")
             EmailVerificationService.send_otp_sms(phone, otp_code, name)
+        else:
+            print(f"DEBUG: No phone number provided for {email_lower}, skipping SMS")
         
         logger.info(f"Verification OTP sent to {email_lower}")
         return verification, None

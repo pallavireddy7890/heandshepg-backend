@@ -92,6 +92,9 @@ class NotificationService:
             return False, "Twilio from number not configured"
         
         try:
+            with open("sms_debug.log", "a") as f:
+                f.write(f"[{datetime.now()}] INFO: Attempting to send SMS to {to_phone}\n")
+            
             from twilio.rest import Client
             
             client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
@@ -100,21 +103,48 @@ class NotificationService:
             if not to_phone.startswith('+'):
                 to_phone = f"+91{to_phone}"  # Default to India
             
+            # Clean up Twilio From number (ensure E.164)
+            from_number = settings.twilio_from_number.replace(" ", "")
+            
+            with open("sms_debug.log", "a") as f:
+                f.write(f"[{datetime.now()}] INFO: Client created. From: {from_number}, To: {to_phone}\n")
+                
             message_obj = client.messages.create(
                 body=message,
-                from_=settings.twilio_from_number,
+                from_=from_number,
                 to=to_phone
             )
             
+            with open("sms_debug.log", "a") as f:
+                f.write(f"[{datetime.now()}] SUCCESS: SMS sent. SID: {message_obj.sid}\n")
+                
             logger.info(f"SMS sent successfully to {to_phone}, SID: {message_obj.sid}")
             return True, None
             
         except ImportError:
             error_msg = "Twilio library not installed. Run: pip install twilio"
+            with open("sms_debug.log", "a") as f:
+                f.write(f"[{datetime.now()}] ERROR: {error_msg}\n")
             logger.error(error_msg)
             return False, error_msg
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            
+            # Check for specific Twilio error codes
+            is_trial_unverified = "21608" in str(e) or "unverified" in str(e).lower()
+            
+            if is_trial_unverified:
+                error_summary = "Twilio Trial Restriction: Recipient number is not verified."
+                instruction = f"ACTION REQUIRED: Please verify {to_phone} in your Twilio Console: https://www.twilio.com/console/phone-numbers/verified"
+                with open("sms_debug.log", "a") as f:
+                    f.write(f"[{datetime.now()}] BLOCKER: {error_summary}\n{instruction}\n")
+                logger.warning(error_summary)
+                return False, error_summary
+            
             error_msg = f"Failed to send SMS: {str(e)}"
+            with open("sms_debug.log", "a") as f:
+                f.write(f"[{datetime.now()}] FAILED: {error_msg}\n{tb}\n")
             logger.error(error_msg)
             return False, error_msg
     

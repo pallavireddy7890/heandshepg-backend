@@ -1,7 +1,11 @@
 """Notification helper utilities."""
 from sqlalchemy.orm import Session
-from app.models import Notification
+from app.models import Notification, User, Profile
 import uuid
+import logging
+from app.services.notification_service import NotificationService
+
+logger = logging.getLogger(__name__)
 
 
 async def create_notification(
@@ -12,10 +16,11 @@ async def create_notification(
     notification_type: str = "info",
     link: str = None,
     reference_id: str = None,
-    reference_type: str = None
+    reference_type: str = None,
+    send_external: bool = True  # Default to True to fulfill omnichannel request
 ) -> Notification:
     """
-    Create a notification for a user and broadcast via WebSocket.
+    Create a notification for a user, broadcast via WebSocket, and optionally send via Email/SMS.
     """
     notification = Notification(
         id=uuid.uuid4(),
@@ -27,10 +32,15 @@ async def create_notification(
         read=False
     )
     db.add(notification)
-    db.commit()
-    db.refresh(notification)
     
-    # Broadcast via WebSocket
+    # Try to commit, but don't fail if we can't save the log (e.g. DB busy)
+    try:
+        db.commit()
+        db.refresh(notification)
+    except Exception as e:
+        logger.warning(f"Failed to save notification record: {e}")
+    
+    # 1. Broadcast via WebSocket
     try:
         from app.routers.websocket import notification_manager
         await notification_manager.send_personal_message({
@@ -43,8 +53,53 @@ async def create_notification(
             "created_at": notification.created_at.isoformat() if notification.created_at else None
         }, str(user_id))
     except Exception as e:
-        import logging
-        logging.warning(f"Failed to broadcast notification: {e}")
+        logger.warning(f"Failed to broadcast notification: {e}")
+    
+    # 2. Omnichannel Delivery (Email + SMS)
+    if send_external:
+        try:
+            profile = db.query(Profile).filter(Profile.user_id == user_id).first()
+            user = db.query(User).filter(User.id == user_id).first()
+            
+            if profile and user:
+                # Send Email if enabled and email exists
+                if profile.email_notifications and user.email:
+                    from app.config import get_settings
+                    settings = get_settings()
+                    
+                    email_body = f"""
+                    <html>
+                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                        <div style="background: #f59e0b; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                            <h2 style="margin: 0;">{title}</h2>
+                        </div>
+                        <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                            <p>Hi {profile.name or 'there'},</p>
+                            <p>{message}</p>
+                            {f'<p><a href="{settings.frontend_url}{link}" style="color: #f59e0b; font-weight: bold; text-decoration: none;">View Details</a></p>' if link else ''}
+                            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+                            <p style="font-size: 12px; color: #999;">© 2026 He&She PG. All rights reserved.</p>
+                        </div>
+                    </body>
+                    </html>
+                    """
+                    NotificationService.send_email(
+                        to_email=user.email,
+                        subject=f"He&She PG: {title}",
+                        body_html=email_body,
+                        body_text=f"He&She PG: {message}"
+                    )
+                
+                # Send SMS if enabled and phone exists
+                if profile.sms_notifications and profile.phone:
+                    sms_message = f"He&She PG: {title} - {message}"
+                    # Trip long messages for SMS
+                    if len(sms_message) > 160:
+                        sms_message = sms_message[:157] + "..."
+                    NotificationService.send_sms(profile.phone, sms_message)
+                    
+        except Exception as e:
+            logger.warning(f"Failed to send external omnichannel notifications: {e}")
         
     return notification
 
@@ -99,13 +154,18 @@ async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_
     )
 
 
-async def notify_payment_received(db: Session, owner_id: uuid.UUID, amount: float, customer_name: str):
+async def notify_payment_received(db: Session, owner_id: uuid.UUID, amount: float, customer_name: str, property_title: str = None):
     """Notify owner when a payment is received."""
+    msg = f"Payment of ₹{amount:,.0f} received from {customer_name}"
+    if property_title:
+        msg += f" for {property_title}"
+    msg += ". Please verify the OTP to complete the transaction."
+    
     return await create_notification(
         db=db,
         user_id=owner_id,
-        title="Payment Received",
-        message=f"₹{amount:,.0f} received from {customer_name}. Please verify the OTP to complete the transaction.",
+        title="💰 Payment Received",
+        message=msg,
         notification_type="payment",
         link="/owner/wallet"
     )
@@ -168,7 +228,25 @@ async def notify_admins_payment_completed(db: Session, customer_name: str, owner
             db=db,
             user_id=admin_id,
             title="💰 Payment Completed",
-            message=f"{customer_name} paid ₹{amount:,.0f} to {owner_name} for {property_title}.",
+            message=f"ADMIN ALERT: {customer_name} paid ₹{amount:,.0f} to {owner_name} for {property_title}.",
             notification_type="payment",
             link="/admin/payments"
         )
+
+
+async def notify_kyc_status(db: Session, user_id: uuid.UUID, status: str, admin_notes: str = None):
+    """Notify owner about their KYC status (Omnichannel: Web, Email, SMS)."""
+    title = "KYC Approved! 🎉" if status == "approved" else "KYC Application Update"
+    msg = "Your owner account has been approved. You can now start listing your properties."
+    if status != "approved":
+        msg = f"Your owner application was not approved. Reason: {admin_notes or 'Please contact support.'}"
+        
+    return await create_notification(
+        db=db,
+        user_id=user_id,
+        title=title,
+        message=msg,
+        notification_type="info" if status == "approved" else "warning",
+        link="/profile",
+        send_external=True
+    )

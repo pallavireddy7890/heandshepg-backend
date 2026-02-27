@@ -597,6 +597,25 @@ async def force_vacate(
     db.commit()
     db.refresh(booking)
     
+    # Notify tenant about force vacate (Omnichannel: Web, Email, SMS)
+    try:
+        from app.utils.notifications import create_notification
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        property_title = property_obj.title if property_obj else "Property"
+        
+        await create_notification(
+            db=db,
+            user_id=booking.customer_id,
+            title="Checkout Processed",
+            message=f"Your stay at {property_title} has been marked as completed (vacated) by the owner.",
+            notification_type="info",
+            link="/bookings",
+            send_external=True
+        )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send force-vacate notification: {e}")
+        
     return {"success": True, "message": "Tenant vacated successfully", "status": "vacated"}
 
 
@@ -630,6 +649,28 @@ async def convert_to_monthly(
     
     db.commit()
     db.refresh(booking)
+    
+    # Notify owner about stay type change (Omnichannel: Web, Email, SMS)
+    try:
+        from app.utils.notifications import create_notification
+        customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+        customer_name = customer_profile.name if customer_profile else current_user.email
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        property_title = property_obj.title if property_obj else "Property"
+        
+        await create_notification(
+            db=db,
+            user_id=booking.owner_id,
+            title="Stay Type Updated",
+            message=f"{customer_name} has converted their stay at {property_title} to Monthly.",
+            notification_type="info",
+            link="/owner/bookings",
+            send_external=True
+        )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send stay type change notification: {e}")
+        
     return booking
 
 
@@ -682,4 +723,26 @@ async def extend_booking(
     
     db.commit()
     db.refresh(booking)
+    
+    # Notify owner about booking extension (Omnichannel: Web, Email, SMS)
+    try:
+        from app.utils.notifications import create_notification
+        customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+        customer_name = customer_profile.name if customer_profile else current_user.email
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        property_title = property_obj.title if property_obj else "Property"
+        
+        await create_notification(
+            db=db,
+            user_id=booking.owner_id,
+            title="Booking Extended",
+            message=f"{customer_name} has extended their stay at {property_title} by {extend_data.extra_days} days.",
+            notification_type="info",
+            link="/owner/bookings",
+            send_external=True
+        )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send extension notification: {e}")
+        
     return booking

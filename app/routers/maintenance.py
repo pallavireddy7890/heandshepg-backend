@@ -46,6 +46,25 @@ async def raise_ticket(
     db.add(new_ticket)
     db.commit()
     db.refresh(new_ticket)
+    
+    # Notify owner about new maintenance ticket (Omnichannel: Web, Email, SMS)
+    try:
+        from app.utils.notifications import create_notification
+        property_obj = db.query(Property).filter(Property.id == new_ticket.property_id).first()
+        if property_obj:
+            await create_notification(
+                db=db,
+                user_id=property_obj.owner_id,
+                title="🔧 New Maintenance Ticket",
+                message=f"A new ticket has been raised: {new_ticket.title} (Priority: {new_ticket.priority.value})",
+                notification_type="maintenance",
+                link="/owner/maintenance",
+                send_external=True
+            )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send ticket creation notification: {e}")
+        
     return new_ticket
 
 
@@ -102,4 +121,23 @@ async def update_ticket(
         
     db.commit()
     db.refresh(ticket)
+    
+    # Notify tenant about ticket update (Omnichannel: Web, Email, SMS)
+    try:
+        from app.utils.notifications import create_notification
+        if ticket_update.status:
+            status_msg = ticket_update.status.value if hasattr(ticket_update.status, 'value') else str(ticket_update.status)
+            await create_notification(
+                db=db,
+                user_id=ticket.tenant_id,
+                title="🔧 Ticket Update",
+                message=f"Your maintenance ticket '{ticket.title}' status has been updated to: {status_msg}",
+                notification_type="maintenance",
+                link="/maintenance",
+                send_external=True
+            )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send ticket update notification: {e}")
+        
     return ticket

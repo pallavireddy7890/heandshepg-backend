@@ -135,7 +135,31 @@ class WalletService:
         
         if not success:
             logger.warning(f"Failed to send OTP SMS to {phone_number}: {error}")
-            # Still return success since OTP was created (can be verified via logs)
+            
+        # Send Email as well for omnichannel support
+        try:
+            from app.models import User
+            user = db.query(User).filter(User.id == user_id).first()
+            if user and user.email:
+                email_body = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6;">
+                    <h2 style="color: #f59e0b;">Transaction OTP</h2>
+                    <p>Your He&She PG transaction OTP is: <strong>{otp_code}</strong></p>
+                    <p>Amount: <strong>Rs.{amount_inr:.2f}</strong></p>
+                    <p>This code is valid for {WalletService.OTP_EXPIRY_MINUTES} minutes.</p>
+                    <p>If you did not initiate this transaction, please ignore this email.</p>
+                </body>
+                </html>
+                """
+                NotificationService.send_email(
+                    to_email=user.email,
+                    subject="He&She PG: Transaction Verification OTP",
+                    body_html=email_body,
+                    body_text=message
+                )
+        except Exception as e:
+            logger.warning(f"Failed to send OTP Email to user {user_id}: {e}")
         
         return True, otp_code
     

@@ -241,15 +241,9 @@ async def approve_owner_application(
     owner_name = owner_profile.name if owner_profile else "Owner"
     owner_email = owner_user.email if owner_user else None
     
-    # Create welcome notification for owner
-    welcome_notification = Notification(
-        user_id=application.user_id,
-        type="owner_approved",
-        title="🎉 Welcome to He&She PG!",
-        message=f"Congratulations {owner_name}! Your owner account has been approved. You can now add properties and start accepting bookings.",
-        read=False,
-    )
-    db.add(welcome_notification)
+    # Create welcome notification for owner (Omnichannel: Web, Email, SMS)
+    from app.utils.notifications import notify_kyc_status
+    await notify_kyc_status(db, application.user_id, status="approved")
     
     # Create audit log
     create_audit_log(
@@ -258,62 +252,11 @@ async def approve_owner_application(
         action="kyc_approval",
         entity_type="owner_application",
         entity_id=application_id,
-        details=f"Approved owner application. Notes: {approval_data.admin_notes or 'None'}",
+        details=f"Approved owner application for {owner_name}. Notes: {approval_data.admin_notes or 'None'}",
         ip_address=request.client.host if request.client else None,
     )
     
     db.commit()
-    
-    # Send welcome email to the approved owner
-    if owner_email:
-        try:
-            email_body = f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <div style="background: linear-gradient(135deg, #f59e0b, #eab308); padding: 20px; border-radius: 10px 10px 0 0;">
-                    <h1 style="color: white; margin: 0;">🎉 Welcome to He&She PG!</h1>
-                </div>
-                <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px;">
-                    <h2 style="color: #374151;">Congratulations, {owner_name}!</h2>
-                    <p style="color: #6b7280; font-size: 16px;">
-                        Your owner account has been <strong>approved</strong>! You now have full access to the Owner Dashboard.
-                    </p>
-                    <p style="color: #6b7280; font-size: 16px;">
-                        Here's what you can do now:
-                    </p>
-                    <ul style="color: #6b7280; font-size: 16px;">
-                        <li>📍 Add your properties with detailed room configurations</li>
-                        <li>📅 Manage bookings from potential tenants</li>
-                        <li>💰 Track payments and revenue</li>
-                        <li>👥 Manage your tenants</li>
-                        <li>📢 Send announcements to your tenants</li>
-                    </ul>
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="{settings.frontend_url}/owner/dashboard" 
-                           style="background: #f59e0b; color: white; padding: 15px 30px; 
-                                  text-decoration: none; border-radius: 8px; font-weight: bold;
-                                  display: inline-block;">
-                            Go to Owner Dashboard
-                        </a>
-                    </div>
-                    <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
-                    <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-                        © {current_year} He&She PG. All rights reserved.
-                    </p>
-                </div>
-            </body>
-            </html>
-            """
-            NotificationService.send_email(
-                to_email=owner_email,
-                subject="🎉 Your He&She PG Owner Account is Approved!",
-                body_html=email_body
-            )
-        except Exception as e:
-            # Don't fail the approval if email fails
-            import logging
-            logging.warning(f"Failed to send welcome email to owner {owner_email}: {e}")
-    
     return {"message": "Application approved successfully"}
 
 
@@ -334,6 +277,10 @@ async def reject_owner_application(
     
     application.approval_status = KycStatus.rejected
     application.admin_notes = rejection_data.admin_notes
+    
+    # Create rejection notification for owner (Omnichannel: Web, Email, SMS)
+    from app.utils.notifications import notify_kyc_status
+    await notify_kyc_status(db, application.user_id, status="rejected", admin_notes=rejection_data.admin_notes)
     
     # Create audit log
     create_audit_log(
