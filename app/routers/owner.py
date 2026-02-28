@@ -1,7 +1,7 @@
 """Owner router for financial tracking and tenant management."""
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -105,10 +105,39 @@ async def get_owner_properties(
                 "rooms": [{
                     "id": str(r.id),
                     "room_type": r.room_type,
+                    "room_number": r.room_number,
+                    "floor_number": r.floor_number or 1,
                     "bed_count": r.bed_count,
                     "price": r.price,
-                    "vacancy_count": r.vacancy_count,
+                    "monthly_price": r.monthly_price,
+                    "daily_price": r.daily_price,
+                    "deposit": r.deposit,
+                    "vacancy_count": r.bed_count - len([
+                        b for b in db.query(Booking).filter(
+                            Booking.room_id == r.id,
+                            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
+                        ).all()
+                    ]),
+                    "is_available": (r.bed_count - len([
+                        b for b in db.query(Booking).filter(
+                            Booking.room_id == r.id,
+                            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
+                        ).all()
+                    ])) > 0,
                     "stay_type": r.stay_type,
+                    "room_photos": r.room_photos or [],
+                    "room_description": r.room_description,
+                    "tenants": [{
+                        "booking_id": str(b.id),
+                        "name": (db.query(Profile).filter(Profile.user_id == b.customer_id).first().name if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None) or (db.query(User).filter(User.id == b.customer_id).first().email if db.query(User).filter(User.id == b.customer_id).first() else "Tenant"),
+                        "email": db.query(User).filter(User.id == b.customer_id).first().email if db.query(User).filter(User.id == b.customer_id).first() else "",
+                        "phone": db.query(Profile).filter(Profile.user_id == b.customer_id).first().phone if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None,
+                        "start_date": b.start_date.isoformat() if b.start_date else None,
+                        "room_id": str(r.id),
+                    } for b in db.query(Booking).filter(
+                        Booking.room_id == r.id,
+                        Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
+                    ).all()],
                 } for r in prop.rooms]
             })
         
@@ -363,10 +392,10 @@ async def get_owner_tenants(
         if not property_ids:
             return []
         
-        # Get active/accepted bookings (tenants)
+        # Get paid/checked_in/active bookings (tenants actually occupying beds)
         active_bookings = db.query(Booking).filter(
             Booking.property_id.in_(property_ids),
-            Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
+            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
         ).offset(skip).limit(limit).all()
         
         result = []
@@ -384,6 +413,8 @@ async def get_owner_tenants(
                 "phone": profile.phone if profile else None,
                 "property_title": property_obj.title if property_obj else None,
                 "property_id": str(property_obj.id) if property_obj else None,
+                "room_id": str(room.id) if room else None,
+                "room_number": room.room_number if room else None,
                 "room_type": room.room_type if room else None,
                 "booking_status": booking.status.value if hasattr(booking.status, 'value') else str(booking.status),
                 "start_date": booking.start_date.isoformat() if booking.start_date else None,
@@ -469,3 +500,288 @@ async def verify_tenant_profile(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+# ========== Manual Tenant Addition ==========
+
+@router.get("/lookup-tenant", dependencies=[Depends(require_owner)])
+async def lookup_tenant_by_email(
+    email: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Look up a tenant by email to verify they exist and are verified before adding."""
+    email_clean = email.strip().lower()
+    if not email_clean or "@" not in email_clean:
+        raise HTTPException(status_code=400, detail="Valid email is required")
+
+    user = db.query(User).filter(User.email == email_clean).first()
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="No account found with this email. The tenant must sign up on He&She PG first."
+        )
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=400,
+            detail="This account is not verified yet. The tenant must complete signup and verify their email first."
+        )
+
+    profile = db.query(Profile).filter(Profile.user_id == user.id).first()
+
+    # Check if tenant already has an active booking
+    active_booking = db.query(Booking).filter(
+        Booking.customer_id == user.id,
+        Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
+    ).first()
+
+    return {
+        "found": True,
+        "tenant_name": profile.name if profile else "Tenant",
+        "tenant_phone": profile.phone if profile else "",
+        "tenant_email": user.email,
+        "has_active_booking": active_booking is not None,
+        "active_booking_message": f"This tenant already has an active booking in another property." if active_booking else None,
+    }
+
+
+class AddTenantRequest(BaseModel):
+    email: str
+    join_date: Optional[date] = None
+
+
+@router.post("/rooms/{room_id}/add-tenant", dependencies=[Depends(require_owner)])
+async def add_tenant_to_room(
+    room_id: UUID,
+    request: AddTenantRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add a verified tenant to a room by their email. Tenant must have signed up first."""
+    try:
+        if not request.email.strip() or "@" not in request.email:
+            raise HTTPException(status_code=400, detail="Valid email is required")
+
+        # Get the room
+        room = db.query(Room).filter(Room.id == room_id).first()
+        if not room:
+            raise HTTPException(status_code=404, detail="Room not found")
+
+        # Verify the room belongs to owner's property
+        property_obj = db.query(Property).filter(Property.id == room.property_id).first()
+        if not property_obj or property_obj.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="This room does not belong to your property")
+
+        # Check vacancy
+        if room.vacancy_count is not None and room.vacancy_count <= 0:
+            raise HTTPException(status_code=400, detail="No vacancy available in this room")
+
+        # Look up verified user by email
+        tenant_user = db.query(User).filter(User.email == request.email.strip().lower()).first()
+        if not tenant_user:
+            raise HTTPException(
+                status_code=404,
+                detail="No account found with this email. The tenant must sign up on He&She PG first."
+            )
+        if not tenant_user.is_verified:
+            raise HTTPException(
+                status_code=400,
+                detail="This account is not verified yet. The tenant must complete their signup and verify their email first."
+            )
+
+        # Get tenant profile for name/phone
+        tenant_profile = db.query(Profile).filter(Profile.user_id == tenant_user.id).first()
+        tenant_name = tenant_profile.name if tenant_profile else "Tenant"
+        tenant_phone = tenant_profile.phone if tenant_profile else ""
+        tenant_email = tenant_user.email
+
+        # Check if this user already has an active booking for this room
+        existing_booking = db.query(Booking).filter(
+            Booking.customer_id == tenant_user.id,
+            Booking.room_id == room_id,
+            Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
+        ).first()
+        if existing_booking:
+            raise HTTPException(status_code=400, detail="This tenant already has an active booking for this room")
+
+        # Check if tenant already has an active booking in ANY room
+        any_active_booking = db.query(Booking).filter(
+            Booking.customer_id == tenant_user.id,
+            Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
+        ).first()
+        if any_active_booking:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{tenant_name}' already has an active booking in another property. They must vacate first."
+            )
+
+        # Create active booking
+        start_date = request.join_date if request.join_date else date.today()
+        booking = Booking(
+            property_id=property_obj.id,
+            room_id=room.id,
+            customer_id=tenant_user.id,
+            owner_id=current_user.id,
+            start_date=start_date,
+            status="active",
+            amount=room.price or 0,
+            security_deposit=room.deposit or 0,
+            maintenance_charge=0,
+            stay_type=room.stay_type or "monthly",
+            customer_snapshot={
+                "name": tenant_name,
+                "email": tenant_email,
+                "phone": tenant_phone,
+            },
+        )
+        db.add(booking)
+
+        # Decrement vacancy
+        if room.vacancy_count is not None and room.vacancy_count > 0:
+            room.vacancy_count -= 1
+            if room.vacancy_count == 0:
+                room.is_available = False
+
+        db.commit()
+
+        return {
+            "message": f"Tenant '{tenant_name}' added to room successfully",
+            "tenant_id": str(tenant_user.id),
+            "booking_id": str(booking.id),
+            "tenant_name": tenant_name,
+            "tenant_phone": tenant_phone,
+            "tenant_email": tenant_email,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/tenants/{booking_id}/remove", dependencies=[Depends(require_owner)])
+async def remove_tenant_from_room(
+    booking_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a tenant from a room by cancelling their booking."""
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+
+        # Verify ownership
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        if not property_obj or property_obj.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        # Cancel the booking
+        booking.status = "vacated"
+
+        # Restore vacancy
+        if booking.room_id:
+            room = db.query(Room).filter(Room.id == booking.room_id).first()
+            if room:
+                if room.vacancy_count is not None:
+                    room.vacancy_count += 1
+                else:
+                    room.vacancy_count = 1
+                room.is_available = True
+
+        db.commit()
+        return {"message": "Tenant removed successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UpdateTenantRequest(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    join_date: Optional[date] = None
+
+
+@router.put("/tenants/{booking_id}/update", dependencies=[Depends(require_owner)])
+async def update_tenant_info(
+    booking_id: UUID,
+    request: UpdateTenantRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update a tenant's profile info (name, phone, email)."""
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+
+        # Verify ownership
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        if not property_obj or property_obj.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        # Update profile
+        profile = db.query(Profile).filter(Profile.user_id == booking.customer_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Tenant profile not found")
+
+        # Get the associated user
+        tenant_user = db.query(User).filter(User.id == booking.customer_id).first()
+        if not tenant_user:
+            raise HTTPException(status_code=404, detail="Tenant user not found")
+
+        if request.name and request.name.strip():
+            profile.name = request.name.strip()
+
+        if request.phone and request.phone.strip():
+            new_phone = request.phone.strip()
+            # Check if phone number already belongs to another verified user
+            existing_profile_by_phone = db.query(Profile).filter(
+                Profile.phone == new_phone, 
+                Profile.user_id != tenant_user.id
+            ).first()
+            if existing_profile_by_phone:
+                existing_phone_user = db.query(User).filter(User.id == existing_profile_by_phone.user_id).first()
+                if existing_phone_user and existing_phone_user.is_verified:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Phone number '{new_phone}' is already registered to another verified account."
+                    )
+            profile.phone = new_phone
+
+        if request.email and request.email.strip():
+            new_email = request.email.strip()
+            # If tenant is already verified, owner cannot change their email
+            if tenant_user.is_verified and new_email != tenant_user.email:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cannot change email for a verified tenant. They must manage it themselves."
+                )
+            
+            # Check if email is already taken by another verified user
+            existing_user_by_email = db.query(User).filter(
+                User.email == new_email, 
+                User.id != tenant_user.id
+            ).first()
+            if existing_user_by_email and existing_user_by_email.is_verified:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Email '{new_email}' is already registered to another verified account."
+                )
+            
+            # Update both profile and user (for unverified claiming)
+            profile.email = new_email
+            if not tenant_user.is_verified:
+                tenant_user.email = new_email
+        
+        if request.join_date:
+            booking.start_date = request.join_date
+
+        db.commit()
+        return {"message": "Tenant info updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))

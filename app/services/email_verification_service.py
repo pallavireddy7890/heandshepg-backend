@@ -149,26 +149,31 @@ class EmailVerificationService:
     def send_otp_email(email: str, otp_code: str, name: str) -> Tuple[bool, Optional[str]]:
         """Send OTP verification email."""
         subject = "Verify Your Email - He&She PG"
+        from app.config import get_settings
+        _settings = get_settings()
+        _logo_url = f"{_settings.frontend_url}/logo.png"
         
         body_html = f"""
         <!DOCTYPE html>
         <html>
         <head>
             <style>
-                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: #f3f4f6; }}
                 .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                .header {{ background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }}
+                .header {{ background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 24px 20px; text-align: center; border-radius: 12px 12px 0 0; }}
+                .header img {{ height: 48px; margin-bottom: 8px; }}
                 .content {{ background: #fff; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }}
                 .otp-box {{ background: #fef3c7; border: 2px dashed #f59e0b; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
                 .otp-code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #d97706; }}
-                .footer {{ background: #f9fafb; padding: 20px; text-align: center; font-size: 12px; color: #6b7280; border-radius: 0 0 8px 8px; }}
+                .footer {{ background: #f9fafb; padding: 20px; text-align: center; font-size: 12px; color: #6b7280; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none; }}
                 .warning {{ color: #dc2626; font-size: 14px; margin-top: 15px; }}
             </style>
         </head>
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>📧 Verify Your Email</h1>
+                    <img src="{_logo_url}" alt="He&She PG" style="height: 48px;" />
+                    <h1 style="margin: 8px 0 0;">📧 Verify Your Email</h1>
                 </div>
                 <div class="content">
                     <p>Hi {name or 'there'},</p>
@@ -184,6 +189,7 @@ class EmailVerificationService:
                 </div>
                 <div class="footer">
                     <p>© 2026 He&She PG. All rights reserved.</p>
+                    <p>Contact us: heandshepg@gmail.com</p>
                     <p>This is an automated message. Please do not reply.</p>
                 </div>
             </div>

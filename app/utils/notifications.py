@@ -69,16 +69,21 @@ async def create_notification(
                     
                     email_body = f"""
                     <html>
-                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                        <div style="background: #f59e0b; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
-                            <h2 style="margin: 0;">{title}</h2>
+                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: #f3f4f6;">
+                        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                        <div style="background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 24px 20px; text-align: center; border-radius: 12px 12px 0 0;">
+                            <img src="{settings.frontend_url}/logo.png" alt="He&She PG" style="height: 48px; margin-bottom: 8px;" />
+                            <h2 style="margin: 8px 0 0; color: white;">{title}</h2>
                         </div>
-                        <div style="padding: 20px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
+                        <div style="padding: 24px; border: 1px solid #e5e7eb; border-top: none; background: #fff;">
                             <p>Hi {profile.name or 'there'},</p>
                             <p>{message}</p>
                             {f'<p><a href="{settings.frontend_url}{link}" style="color: #f59e0b; font-weight: bold; text-decoration: none;">View Details</a></p>' if link else ''}
-                            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-                            <p style="font-size: 12px; color: #999;">© 2026 He&She PG. All rights reserved.</p>
+                        </div>
+                        <div style="background: #f9fafb; padding: 16px; text-align: center; font-size: 12px; color: #6b7280; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none;">
+                            <p style="margin: 4px 0;">&copy; 2026 He&She PG. All rights reserved.</p>
+                            <p style="margin: 4px 0;">Contact us: heandshepg@gmail.com</p>
+                        </div>
                         </div>
                     </body>
                     </html>

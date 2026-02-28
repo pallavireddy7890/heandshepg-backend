@@ -327,6 +327,10 @@ async def update_room(
         )
     
     update_data = room_data.model_dump(exclude_unset=True)
+    # Never allow room edits to overwrite vacancy_count or is_available —
+    # these are managed exclusively by the booking system (add/remove tenant).
+    update_data.pop("vacancy_count", None)
+    update_data.pop("is_available", None)
     for field, value in update_data.items():
         setattr(room, field, value)
     

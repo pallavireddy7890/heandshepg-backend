@@ -99,7 +99,7 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
     
     # Check if email already exists as a registered user
     existing_user = db.query(User).filter(User.email == email_lower).first()
-    if existing_user:
+    if existing_user and existing_user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already exists"
@@ -112,10 +112,13 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
         if phone_clean and variants:
             existing_profile = db.query(Profile).filter(Profile.phone.in_(variants)).first()
             if existing_profile:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Phone number already exists"
-                )
+                # Only block if the profile belongs to a verified user
+                profile_owner = db.query(User).filter(User.id == existing_profile.user_id).first()
+                if profile_owner and profile_owner.is_verified:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Phone number already exists"
+                    )
             
             # Also check pending verifications (someone started signup but hasn't verified yet)
             from app.models import EmailVerification as EV
@@ -193,7 +196,7 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
     
     # Double-check: prevent race condition where two users sign up with same email/phone simultaneously
     existing_user = db.query(User).filter(User.email == user_data["email"]).first()
-    if existing_user:
+    if existing_user and existing_user.is_verified:
         db.delete(verification)
         db.commit()
         raise HTTPException(
@@ -205,54 +208,91 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
         pv = phone_variants(user_data["phone"])
         existing_profile = db.query(Profile).filter(Profile.phone.in_(pv)).first()
         if existing_profile:
-            db.delete(verification)
-            db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Phone number already exists"
+            # Check if this profile belongs to an unverified owner-created account
+            profile_user = db.query(User).filter(User.id == existing_profile.user_id).first()
+            if profile_user and profile_user.is_verified:
+                db.delete(verification)
+                db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number already exists"
+                )
+    
+    if existing_user and not existing_user.is_verified:
+        # Owner-created account: update password, verify, and update profile
+        existing_user.hashed_password = user_data["hashed_password"]
+        existing_user.is_verified = True
+        
+        # Update profile
+        profile = db.query(Profile).filter(Profile.user_id == existing_user.id).first()
+        if profile:
+            profile.name = user_data["name"]
+            profile.email = user_data["email"]
+            if user_data.get("phone"):
+                profile.phone = normalize_phone(user_data["phone"])
+        else:
+            profile = Profile(
+                user_id=existing_user.id,
+                name=user_data["name"],
+                email=user_data["email"],
+                phone=normalize_phone(user_data.get("phone")) if user_data.get("phone") else None,
             )
-    
-    # Create user
-    new_user = User(
-        email=user_data["email"],
-        hashed_password=user_data["hashed_password"],
-        is_active=True,
-        is_verified=True,  # Email is now verified
-    )
-    db.add(new_user)
-    db.flush()
-    
-    # Create profile
-    profile = Profile(
-        user_id=new_user.id,
-        name=user_data["name"],
-        email=user_data["email"],
-        phone=normalize_phone(user_data.get("phone")) if user_data.get("phone") else None,
-    )
-    db.add(profile)
-    
-    # Assign role
-    role_to_assign = user_data["role"]
-    if role_to_assign == AppRole.owner:
-        # Create OwnersProfile for KYC tracking
-        owners_profile = OwnersProfile(
-            user_id=new_user.id,
-            approval_status=KycStatus.pending,
+            db.add(profile)
+        
+        # Ensure role exists
+        role_to_assign = user_data["role"]
+        existing_role = db.query(UserRole).filter(UserRole.user_id == existing_user.id).first()
+        if not existing_role:
+            user_role = UserRole(user_id=existing_user.id, role=role_to_assign)
+            db.add(user_role)
+        
+        if role_to_assign == AppRole.owner:
+            from app.models import OwnersProfile, KycStatus
+            existing_owner_profile = db.query(OwnersProfile).filter(OwnersProfile.user_id == existing_user.id).first()
+            if not existing_owner_profile:
+                owners_profile = OwnersProfile(user_id=existing_user.id, approval_status=KycStatus.pending)
+                db.add(owners_profile)
+        
+        db.delete(verification)
+        db.commit()
+        db.refresh(existing_user)
+        db.refresh(profile)
+        
+        new_user = existing_user  # For token/response below
+    else:
+        # Create new user
+        new_user = User(
+            email=user_data["email"],
+            hashed_password=user_data["hashed_password"],
+            is_active=True,
+            is_verified=True,
         )
-        db.add(owners_profile)
-    
-    user_role = UserRole(
-        user_id=new_user.id,
-        role=role_to_assign,
-    )
-    db.add(user_role)
-    
-    # Delete the verification record
-    db.delete(verification)
-    
-    db.commit()
-    db.refresh(new_user)
-    db.refresh(profile)
+        db.add(new_user)
+        db.flush()
+        
+        # Create profile
+        profile = Profile(
+            user_id=new_user.id,
+            name=user_data["name"],
+            email=user_data["email"],
+            phone=normalize_phone(user_data.get("phone")) if user_data.get("phone") else None,
+        )
+        db.add(profile)
+        
+        # Assign role
+        role_to_assign = user_data["role"]
+        if role_to_assign == AppRole.owner:
+            from app.models import OwnersProfile, KycStatus
+            owners_profile = OwnersProfile(user_id=new_user.id, approval_status=KycStatus.pending)
+            db.add(owners_profile)
+        
+        user_role = UserRole(user_id=new_user.id, role=role_to_assign)
+        db.add(user_role)
+        
+        db.delete(verification)
+        db.commit()
+        db.refresh(new_user)
+        db.refresh(profile)
     
     # Create welcome notification for user (Omnichannel: Web, Email, SMS)
     try:
@@ -473,11 +513,12 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
         email_subject = "Reset Your He&She PG Password"
         email_body = f"""
         <html>
-        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #f59e0b, #eab308); padding: 20px; border-radius: 10px 10px 0 0;">
-                <h1 style="color: white; margin: 0;">He&She PG</h1>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f3f4f6;">
+            <div style="background: linear-gradient(135deg, #f59e0b, #eab308); padding: 24px 20px; border-radius: 12px 12px 0 0; text-align: center;">
+                <img src="{frontend_url}/logo.png" alt="He&She PG" style="height: 48px; margin-bottom: 8px;" />
+                <h1 style="color: white; margin: 8px 0 0;">He&She PG</h1>
             </div>
-            <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px;">
+            <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px;">
                 <h2 style="color: #374151;">Password Reset Request</h2>
                 <p style="color: #6b7280; font-size: 16px;">
                     We received a request to reset your password. Click the button below to create a new password:
@@ -498,7 +539,7 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
                 </p>
                 <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
                 <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-                    © 2024 He&She PG. All rights reserved.
+                    © 2026 He&She PG. All rights reserved.<br/>Contact us: heandshepg@gmail.com
                 </p>
             </div>
         </body>
