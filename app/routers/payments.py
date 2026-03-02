@@ -90,10 +90,11 @@ async def create_payment_order(
         # Store order ID in payment record
         payment = Payment(
             booking_id=UUID(request.booking_id),
-            amount=request.amount,
-            payment_type=PaymentType.rent,
+            user_id=current_user.id,
+            amount=int(request.amount),
+            type=PaymentType.monthly_rent,
             status=PaymentStatus.pending,
-            transaction_id=razorpay_order["id"],
+            razorpay_order_id=razorpay_order["id"],
         )
         db.add(payment)
         db.commit()
@@ -143,7 +144,7 @@ async def verify_payment(
     
     # Find payment by order ID
     payment = db.query(Payment).filter(
-        Payment.transaction_id == request.razorpay_order_id
+        Payment.razorpay_order_id == request.razorpay_order_id
     ).first()
     
     if not payment:
@@ -172,8 +173,10 @@ async def verify_payment(
         
         # Update payment status
         payment.status = PaymentStatus.completed
-        payment.payment_date = datetime.now(timezone.utc)
-        payment.transaction_id = request.razorpay_payment_id
+        # Use verified payment date if available, or current time
+        if hasattr(payment, 'payment_date'):
+            payment.payment_date = datetime.now(timezone.utc)
+        payment.razorpay_payment_id = request.razorpay_payment_id
         
         # Update booking status
         booking = db.query(Booking).filter(Booking.id == payment.booking_id).first()

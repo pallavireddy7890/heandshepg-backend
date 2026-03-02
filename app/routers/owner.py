@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import User, Profile, Property, Booking, Payment, Invoice, Room, PaymentStatus, BookingStatus
-from app.utils.security import get_current_user, require_role
+from app.utils.security import get_current_user, require_role, get_user_role
 
 require_owner = require_role("owner")
 
@@ -96,6 +96,7 @@ async def get_owner_properties(
                 "locality": prop.locality,
                 "monthly_rent": prop.monthly_rent,
                 "deposit": prop.deposit,
+                "grace_period": prop.grace_period,
                 "gender_preference": prop.gender_preference,
                 "amenities": prop.amenities or [],
                 "photos": prop.photos or [],
@@ -112,6 +113,8 @@ async def get_owner_properties(
                     "monthly_price": r.monthly_price,
                     "daily_price": r.daily_price,
                     "deposit": r.deposit,
+                    "security_deposit": r.security_deposit,
+                    "maintenance_charge": r.maintenance_charge,
                     "vacancy_count": r.bed_count - len([
                         b for b in db.query(Booking).filter(
                             Booking.room_id == r.id,
@@ -127,6 +130,9 @@ async def get_owner_properties(
                     "stay_type": r.stay_type,
                     "room_photos": r.room_photos or [],
                     "room_description": r.room_description,
+                    "area_sqft": r.area_sqft,
+                    "width_ft": r.width_ft,
+                    "has_ventilation": r.has_ventilation,
                     "tenants": [{
                         "booking_id": str(b.id),
                         "name": (db.query(Profile).filter(Profile.user_id == b.customer_id).first().name if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None) or (db.query(User).filter(User.id == b.customer_id).first().email if db.query(User).filter(User.id == b.customer_id).first() else "Tenant"),
@@ -136,7 +142,15 @@ async def get_owner_properties(
                         "room_id": str(r.id),
                     } for b in db.query(Booking).filter(
                         Booking.room_id == r.id,
-                        Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
+                        # Filter by business logic - active or soon-to-be active tenants
+                        Booking.status.in_([
+                            BookingStatus.active, 
+                            BookingStatus.paid, 
+                            BookingStatus.checked_in, 
+                            BookingStatus.vacate_requested,
+                            BookingStatus.accepted,
+                            BookingStatus.requested
+                        ])
                     ).all()],
                 } for r in prop.rooms]
             })
@@ -525,6 +539,14 @@ async def lookup_tenant_by_email(
             detail="This account is not verified yet. The tenant must complete signup and verify their email first."
         )
 
+    # Role Check: Only customers can be added as tenants
+    role = get_user_role(user, db)
+    if role in ["owner", "admin"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Accounts with '{role}' role cannot be added as tenants. Please use a regular customer account."
+        )
+
     profile = db.query(Profile).filter(Profile.user_id == user.id).first()
 
     # Check if tenant already has an active booking
@@ -585,6 +607,14 @@ async def add_tenant_to_room(
             raise HTTPException(
                 status_code=400,
                 detail="This account is not verified yet. The tenant must complete their signup and verify their email first."
+            )
+
+        # Role Check: Only customers can be added as tenants
+        role = get_user_role(tenant_user, db)
+        if role in ["owner", "admin"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Accounts with '{role}' role cannot be added as tenants. Please use a regular customer account."
             )
 
         # Get tenant profile for name/phone

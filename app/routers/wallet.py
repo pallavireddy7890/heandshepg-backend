@@ -42,6 +42,13 @@ class InitiatePaymentResponse(BaseModel):
     currency: str
     key_id: str
     message: str
+    
+    
+class InitiateOfflinePaymentRequest(BaseModel):
+    booking_id: str
+    amount: float  # Amount in INR
+    payment_type: Optional[str] = "total"  # total, rent, deposit
+    offline_notes: Optional[str] = None
 
 
 class VerifyRazorpayRequest(BaseModel):
@@ -119,6 +126,51 @@ async def get_my_pending_payments(
             "owner_name": owner_profile.name if owner_profile else "Property Owner",
             "property_title": property_title,
             "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
+            "payment_method": txn.payment_method,
+            "offline_notes": txn.offline_notes,
+            "created_at": txn.created_at.isoformat() if txn.created_at else None,
+        })
+    
+    return result
+
+
+@router.get("/owner-pending-payments")
+async def get_owner_pending_payments(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get owner's pending payments (offline or online awaiting OTP)."""
+    # Get transactions where current user is the receiver and not completed
+    transactions = db.query(WalletTransaction).filter(
+        WalletTransaction.receiver_id == current_user.id,
+        WalletTransaction.status != TransactionStatus.completed,
+        WalletTransaction.status != TransactionStatus.failed,
+        WalletTransaction.status != TransactionStatus.rejected
+    ).order_by(WalletTransaction.created_at.desc()).all()
+    
+    result = []
+    for txn in transactions:
+        # Get payer (customer) info
+        payer_profile = db.query(Profile).filter(Profile.user_id == txn.payer_id).first()
+        
+        # Get property info from booking
+        property_title = None
+        if txn.booking_id:
+            booking = db.query(Booking).filter(Booking.id == txn.booking_id).first()
+            if booking:
+                from app.models import Property
+                prop = db.query(Property).filter(Property.id == booking.property_id).first()
+                if prop:
+                    property_title = prop.title
+        
+        result.append({
+            "transaction_id": str(txn.id),
+            "amount": txn.amount / 100,  # In INR
+            "customer_name": payer_profile.name if payer_profile else "Customer",
+            "property_title": property_title,
+            "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
+            "payment_method": txn.payment_method,
+            "offline_notes": txn.offline_notes,
             "created_at": txn.created_at.isoformat() if txn.created_at else None,
         })
     
@@ -224,6 +276,57 @@ async def initiate_wallet_payment(
         key_id=settings.razorpay_key_id or "rzp_test_mock",
         message="Payment initiated. Complete payment via Razorpay."
     )
+
+
+@router.post("/initiate-offline-payment")
+async def initiate_offline_wallet_payment(
+    request: InitiateOfflinePaymentRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Initiate an offline payment for a booking.
+    Creates a wallet transaction in pending state with payment_method='offline'.
+    """
+    # Get booking
+    booking = db.query(Booking).filter(Booking.id == request.booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+    
+    # Verify customer is making the payment
+    if str(booking.customer_id) != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to pay for this booking")
+    
+    # Booking must be accepted before payment
+    if booking.status not in ["accepted", "requested"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Booking must be accepted to make payment")
+    
+    # Get owner's wallet
+    owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
+    
+    # Amount in paise
+    amount_paise = int(request.amount * 100)
+    
+    # Create offline transaction
+    transaction = WalletService.create_offline_transaction(
+        db=db,
+        wallet_id=owner_wallet.id,
+        booking_id=UUID(request.booking_id),
+        payer_id=current_user.id,
+        receiver_id=booking.owner_id,
+        amount=amount_paise,
+        payment_type=request.payment_type,
+        offline_notes=request.offline_notes,
+        description=f"Offline payment ({request.payment_type}) for booking {request.booking_id}",
+    )
+    
+    return {
+        "success": True,
+        "message": "Offline payment request submitted. The property owner will verify it.",
+        "transaction_id": str(transaction.id),
+        "amount": request.amount,
+        "status": "pending_verification"
+    }
 
 
 @router.post("/verify-razorpay")
@@ -372,6 +475,10 @@ async def verify_transaction_otp(
                 booking.deposit_paid = True
                 booking.maintenance_paid = True
             
+            # Update last payment date for grace period logic
+            if p_type in ['rent', 'total']:
+                booking.last_payment_date = func.now()
+            
             # Update overall status
             # If both rent and deposit are paid, it's fully paid
             if booking.rent_paid and booking.deposit_paid:
@@ -437,6 +544,80 @@ async def verify_transaction_otp(
         "transaction_id": str(transaction.id),
         "amount_credited": transaction.amount / 100,
         "new_balance": balance["balance_inr"],
+    }
+
+
+@router.post("/verify-offline")
+async def verify_offline_transaction(
+    transaction_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Directly verify an offline transaction (Owner only).
+    Bypasses OTP as the owner is manually confirming they received the funds.
+    """
+    # Get transaction
+    transaction = db.query(WalletTransaction).filter(
+        WalletTransaction.id == transaction_id,
+        WalletTransaction.payment_method == 'offline'
+    ).first()
+    
+    if not transaction:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Offline transaction not found")
+    
+    # Verify current user is the owner (receiver) or admin
+    if str(transaction.receiver_id) != str(current_user.id) and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the property owner or admin can verify offline payments"
+        )
+    
+    # Complete the transaction (bypass OTP)
+    complete_success, complete_message = WalletService.complete_transaction(db, transaction.id, bypass_otp=True)
+    
+    if not complete_success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=complete_message)
+    
+    # Update booking status (Logic duplicated from verify-otp, ideally should be in a shared service method)
+    if transaction.booking_id:
+        booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
+        if booking:
+            p_type = transaction.payment_type
+            if p_type == 'rent':
+                booking.rent_paid = True
+            elif p_type == 'deposit':
+                booking.deposit_paid = True
+            elif p_type == 'maintenance':
+                booking.maintenance_paid = True
+            elif p_type == 'total':
+                booking.rent_paid = True
+                booking.deposit_paid = True
+                booking.maintenance_paid = True
+            
+            # Update last payment date for grace period logic
+            if p_type in ['rent', 'total']:
+                booking.last_payment_date = func.now()
+            
+            if booking.rent_paid and booking.deposit_paid:
+                booking.status = "paid"
+            elif booking.rent_paid:
+                booking.status = "checked_in"
+            
+            # Vacancy deduction
+            if booking.status in ["paid", "checked_in"] and booking.room_id:
+                room = db.query(Room).filter(Room.id == booking.room_id).first()
+                if room and room.vacancy_count and room.vacancy_count > 0:
+                    room.vacancy_count -= 1
+                    if room.vacancy_count == 0:
+                        room.is_available = False
+            
+            db.commit()
+    
+    return {
+        "success": True,
+        "message": "Offline payment verified successfully",
+        "transaction_id": str(transaction.id),
     }
 
 

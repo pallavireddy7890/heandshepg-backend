@@ -77,6 +77,8 @@ class WalletTransaction(Base):
     otp_verified_at = Column(DateTime(timezone=True))
     
     # Payment reference
+    payment_method = Column(String(20), default='online')  # 'online' or 'offline'
+    offline_notes = Column(Text)  # Transaction ID or notes for offline payment
     razorpay_payment_id = Column(String(255))
     razorpay_order_id = Column(String(255))
     

@@ -94,6 +94,43 @@ class WalletService:
         return transaction
     
     @staticmethod
+    def create_offline_transaction(
+        db: Session,
+        wallet_id: UUID,
+        booking_id: UUID,
+        payer_id: UUID,
+        receiver_id: UUID,
+        amount: int,
+        payment_type: str = 'total',
+        offline_notes: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> WalletTransaction:
+        """Create a new offline wallet transaction."""
+        transaction = WalletTransaction(
+            wallet_id=wallet_id,
+            booking_id=booking_id,
+            payer_id=payer_id,
+            receiver_id=receiver_id,
+            amount=amount,
+            payment_type=payment_type,
+            transaction_type=TransactionType.credit,
+            status=TransactionStatus.pending,
+            payment_method='offline',
+            offline_notes=offline_notes,
+            description=description,
+        )
+        db.add(transaction)
+        
+        # Add to owner's pending_balance
+        owner_wallet = db.query(Wallet).filter(Wallet.id == wallet_id).first()
+        if owner_wallet:
+            owner_wallet.pending_balance += amount
+        
+        db.commit()
+        db.refresh(transaction)
+        return transaction
+    
+    @staticmethod
     def create_and_send_otp(
         db: Session,
         transaction_id: UUID,
@@ -272,9 +309,10 @@ class WalletService:
     @staticmethod
     def complete_transaction(
         db: Session,
-        transaction_id: UUID
+        transaction_id: UUID,
+        bypass_otp: bool = False
     ) -> Tuple[bool, str]:
-        """Complete the transaction after OTP verification."""
+        """Complete the transaction after OTP verification or bypass for offline."""
         transaction = db.query(WalletTransaction).filter(
             WalletTransaction.id == transaction_id
         ).first()
@@ -282,15 +320,20 @@ class WalletService:
         if not transaction:
             return False, "Transaction not found"
         
-        # Check if owner OTP is verified
-        owner_otp = db.query(TransactionOTP).filter(
-            TransactionOTP.transaction_id == transaction_id,
-            TransactionOTP.otp_type == "owner",
-            TransactionOTP.is_verified == True
-        ).first()
-        
-        if not owner_otp:
-            return False, "Owner OTP verification required"
+        # Check if owner OTP is verified (skip for offline if requested)
+        if not bypass_otp:
+            owner_otp = db.query(TransactionOTP).filter(
+                TransactionOTP.transaction_id == transaction_id,
+                TransactionOTP.otp_type == "owner",
+                TransactionOTP.is_verified == True
+            ).first()
+            
+            if not owner_otp:
+                return False, "Owner OTP verification required"
+        else:
+            # For offline/bypass, ensure it's not already completed
+            if transaction.status == TransactionStatus.completed:
+                return False, "Transaction already completed"
         
         # Get owner's wallet
         owner_wallet = db.query(Wallet).filter(Wallet.user_id == transaction.receiver_id).first()
@@ -376,6 +419,8 @@ class WalletService:
                 "property_title": property_title,
                 "description": description,
                 "otp_verified": txn.otp_verified,
+                "payment_method": txn.payment_method,
+                "offline_notes": txn.offline_notes,
                 "razorpay_payment_id": txn.razorpay_payment_id,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
             })

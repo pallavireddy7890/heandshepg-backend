@@ -32,7 +32,7 @@ class Property(Base):
     amenities = Column(ARRAY(Text))
     monthly_rent = Column(Integer, nullable=True)
     deposit = Column(Integer, nullable=True)
-    maintenance_charge = Column(Integer, default=0)
+    grace_period = Column(Integer, default=0)
     rules = Column(Text)
     photos = Column(ARRAY(Text))
     available_from = Column(Date, nullable=False)
@@ -77,6 +77,7 @@ class Room(Base):
     security_deposit = Column(Integer, nullable=True)  # Security deposit per room
     monthly_price = Column(Integer)  # Price per bed per month
     daily_price = Column(Integer)  # Price per bed per day
+    maintenance_charge = Column(Integer, default=0)  # Maintenance charge per room
     vacancy_count = Column(Integer, default=0)
     is_available = Column(Boolean, default=True)
     stay_type = Column(String(20), default="monthly")  # 'monthly' or 'daily'

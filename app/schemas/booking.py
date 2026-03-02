@@ -21,6 +21,7 @@ class PaymentStatusEnum(str, Enum):
     completed = "completed"
     failed = "failed"
     refunded = "refunded"
+    pending_verification = "pending_verification"
 
 
 class PaymentTypeEnum(str, Enum):
@@ -78,6 +79,7 @@ class BookingResponse(BaseModel):
     rent_paid: bool = False
     deposit_paid: bool = False
     maintenance_paid: bool = False
+    last_payment_date: Optional[datetime] = None
     cancelled_at: Optional[datetime]
     cancel_reason: Optional[str]
     created_at: datetime
@@ -97,6 +99,8 @@ class PaymentCreate(BaseModel):
     booking_id: Optional[UUID] = None
     amount: int = Field(..., ge=0)
     type: PaymentTypeEnum
+    payment_method: Optional[str] = "online"
+    offline_reference: Optional[str] = None
 
 
 class PaymentResponse(BaseModel):
@@ -109,6 +113,10 @@ class PaymentResponse(BaseModel):
     razorpay_order_id: Optional[str]
     status: str
     type: str
+    payment_method: Optional[str] = "online"
+    offline_reference: Optional[str] = None
+    verified_by_id: Optional[UUID] = None
+    payment_date: Optional[datetime] = None
     commission_amount: Optional[int]
     created_at: datetime
     updated_at: datetime

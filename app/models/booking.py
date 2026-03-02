@@ -26,6 +26,7 @@ class PaymentStatus(str, enum.Enum):
     completed = "completed"
     failed = "failed"
     refunded = "refunded"
+    pending_verification = "pending_verification"
 
 
 class PaymentType(str, enum.Enum):
@@ -63,6 +64,7 @@ class Booking(Base):
     rent_paid = Column(Boolean, default=False)
     deposit_paid = Column(Boolean, default=False)
     maintenance_paid = Column(Boolean, default=False)
+    last_payment_date = Column(DateTime(timezone=True))
     stay_type = Column(String(20), default="monthly")  # 'monthly' or 'daily'
     duration_days = Column(Integer)
     payment_id = Column(UUID(as_uuid=True))
@@ -93,10 +95,14 @@ class Payment(Base):
     currency = Column(String(3), default="INR")
     razorpay_payment_id = Column(String(255))
     razorpay_order_id = Column(String(255))
-    status = Column(ENUM('pending', 'completed', 'failed', 'refunded', 
+    status = Column(ENUM('pending', 'completed', 'failed', 'refunded', 'pending_verification',
                          name='payment_status', create_type=False), default='pending')
     type = Column(ENUM('booking', 'monthly_rent', 'refund', 'commission', 
                        name='payment_type', create_type=False), nullable=False)
+    payment_method = Column(String(20), default="online")  # 'online' or 'offline'
+    offline_reference = Column(Text)  # Transaction ID or notes for offline payment
+    verified_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    payment_date = Column(DateTime(timezone=True))
     commission_amount = Column(Integer, default=0)
     payment_metadata = Column(JSONB)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

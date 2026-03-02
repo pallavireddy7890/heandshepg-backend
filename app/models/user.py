@@ -1,5 +1,5 @@
 """SQLAlchemy models for users, profiles, and roles."""
-from sqlalchemy import Column, String, Boolean, DateTime, Date, ForeignKey, Enum, Text, ARRAY
+from sqlalchemy import Column, String, Boolean, DateTime, Date, ForeignKey, Enum, Text, ARRAY, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -80,6 +80,9 @@ class Profile(Base):
     
     # Notification preferences
     payment_reminders_enabled = Column(Boolean, default=True)
+    rent_reminder_day = Column(Integer, default=1)  # Day of month to send reminder
+    rent_due_day = Column(Integer, default=5)       # Day of month rent is due
+    rent_reminder_message = Column(Text)            # Custom reminder message template
     maintenance_reminders_enabled = Column(Boolean, default=True)
     email_notifications = Column(Boolean, default=True)
     sms_notifications = Column(Boolean, default=True)

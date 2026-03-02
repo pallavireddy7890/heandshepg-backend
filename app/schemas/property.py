@@ -35,6 +35,7 @@ class RoomBase(BaseModel):
     area_sqft: Optional[int] = Field(None, ge=0)
     width_ft: Optional[int] = Field(None, ge=0)
     has_ventilation: Optional[bool] = True
+    maintenance_charge: Optional[int] = Field(0, ge=0)
 
 
 class RoomCreate(RoomBase):
@@ -62,6 +63,7 @@ class RoomUpdate(BaseModel):
     area_sqft: Optional[int] = Field(None, ge=0)
     width_ft: Optional[int] = Field(None, ge=0)
     has_ventilation: Optional[bool] = None
+    maintenance_charge: Optional[int] = Field(None, ge=0)
 
 
 class RoomResponse(RoomBase):
@@ -88,7 +90,7 @@ class PropertyBase(BaseModel):
     amenities: Optional[List[str]] = None
     monthly_rent: Optional[int] = Field(None, ge=0)
     deposit: Optional[int] = Field(None, ge=0)
-    maintenance_charge: Optional[int] = Field(0, ge=0)
+    grace_period: Optional[int] = Field(0, ge=0)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: date
@@ -117,7 +119,7 @@ class PropertyUpdate(BaseModel):
     amenities: Optional[List[str]] = None
     monthly_rent: Optional[int] = Field(None, ge=0)
     deposit: Optional[int] = Field(None, ge=0)
-    maintenance_charge: Optional[int] = Field(None, ge=0)
+    grace_period: Optional[int] = Field(None, ge=0)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: Optional[date] = None

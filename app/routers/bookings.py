@@ -144,6 +144,7 @@ async def list_bookings(
                     "city": property_obj.city if property_obj else None,
                     "locality": property_obj.locality if property_obj else None,
                     "photos": property_obj.photos if property_obj else None,
+                    "grace_period": property_obj.grace_period if property_obj else 0,
                 } if property_obj else None,
                 "room": {
                     "room_type": room_obj.room_type,
@@ -353,7 +354,7 @@ async def create_booking(
         duration_days=duration,
         amount=amount,
         security_deposit=security_deposit,
-        maintenance_charge=0 if is_daily else (property.maintenance_charge or 0),
+        maintenance_charge=0 if is_daily else ((room.maintenance_charge if room else property.maintenance_charge) or 0),
         status="requested",
         # Snapshot of customer info - preserved even if customer deletes account
         customer_snapshot={

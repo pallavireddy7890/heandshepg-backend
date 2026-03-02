@@ -28,62 +28,132 @@ def check_rent_due_dates():
     
     db = SessionLocal()
     try:
-        # Find active bookings with rent due in the next 7 days
         today = datetime.utcnow().date()
-        week_from_now = today + timedelta(days=7)
+        reminders_created = 0
         
-        # Get all active bookings ending today or earlier
-        active_bookings = db.query(Booking).filter(
-            Booking.end_date <= today,
+        # 1. Cyclic Monthly Reminders
+        # Find all owners who have payment reminders enabled
+        owner_profiles = db.query(Profile).filter(
+            and_(
+                Profile.payment_reminders_enabled == True,
+                Profile.rent_reminder_day == today.day
+            )
+        ).all()
+        
+        for owner_profile in owner_profiles:
+            # Find all active monthly bookings for this owner
+            active_monthly = db.query(Booking).filter(
+                Booking.owner_id == owner_profile.user_id,
+                Booking.stay_type == 'monthly',
+                Booking.status.in_(['active', 'checked_in', 'paid'])
+            ).all()
+            
+            for booking in active_monthly:
+                # Check if we already sent a reminder today for this booking
+                existing_reminder = db.query(Notification).filter(
+                    Notification.user_id == booking.customer_id,
+                    Notification.type == "payment_reminder",
+                    Notification.created_at >= datetime.utcnow().replace(hour=0, minute=0, second=0)
+                ).first()
+                
+                if not existing_reminder:
+                    property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+                    property_title = property_obj.title if property_obj else "your PG"
+                    
+                    # Construct message
+                    due_day = owner_profile.rent_due_day or 5
+                    if owner_profile.rent_reminder_message:
+                        message = owner_profile.rent_reminder_message.replace("{property}", property_title)
+                        message = message.replace("{amount}", f"₹{booking.amount:,.0f}")
+                        message = message.replace("{due_day}", str(due_day))
+                    else:
+                        message = f"Reminder: Your monthly rent for {property_title} is due on the {due_day}th. Amount: ₹{booking.amount:,.0f}"
+                    
+                    notification = Notification(
+                        id=uuid.uuid4(),
+                        user_id=booking.customer_id,
+                        title="Monthly Rent Reminder",
+                        message=message,
+                        type="payment_reminder",
+                        link="/bookings",
+                        read=False
+                    )
+                    db.add(notification)
+                    reminders_created += 1
+                    logger.info(f"Cyclic rent reminder created for Booking {booking.id} (Owner {owner_profile.user_id})")
+
+        # 2. Stay-End Reminders
+        week_from_now = today + timedelta(days=7)
+        ending_bookings = db.query(Booking).filter(
+            Booking.end_date >= today,
+            Booking.end_date <= week_from_now,
             Booking.status.in_(['active', 'checked_in', 'paid'])
         ).all()
         
-        reminders_created = 0
-        
-        for booking in active_bookings:
-            # Check if next rent is due
-            if booking.end_date:
-                end_date = booking.end_date.date() if hasattr(booking.end_date, 'date') else booking.end_date
+        for booking in ending_bookings:
+            owner_profile = db.query(Profile).filter(Profile.user_id == booking.owner_id).first()
+            if owner_profile and owner_profile.payment_reminders_enabled:
+                existing_reminder = db.query(Notification).filter(
+                    Notification.user_id == booking.customer_id,
+                    Notification.type == "payment_reminder",
+                    Notification.created_at >= datetime.utcnow().replace(hour=0, minute=0, second=0)
+                ).first()
                 
-                # If booking is ending within 7 days, send reminder
-                days_until_due = (end_date - today).days
-                
-                if 0 <= days_until_due <= 7:
-                    # Check if owner has payment reminders enabled
-                    owner_profile = db.query(Profile).filter(Profile.user_id == booking.owner_id).first()
+                if not existing_reminder:
+                    property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+                    property_title = property_obj.title if property_obj else "your stay"
                     
-                    if owner_profile and owner_profile.payment_reminders_enabled:
-                        # Get property info
-                        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
-                        property_title = property_obj.title if property_obj else "your PG"
-                        
-                        # Check if we already sent a reminder today for this booking
-                        existing_reminder = db.query(Notification).filter(
-                            Notification.user_id == booking.customer_id,
-                            Notification.type == "payment_reminder",
-                            Notification.created_at >= datetime.utcnow().replace(hour=0, minute=0, second=0)
-                        ).first()
-                        
-                        if not existing_reminder:
-                            # Create notification for tenant
-                            notification = Notification(
-                                id=uuid.uuid4(),
-                                user_id=booking.customer_id,
-                                title="Rent Payment Reminder",
-                                message=f"Your rent for {property_title} is due in {days_until_due} days. Amount: ₹{booking.amount:,.0f}",
-                                type="payment_reminder",
-                                link="/bookings",
-                                read=False
-                            )
-                            db.add(notification)
-                            logger.info(f"Rent reminder created: Booking {booking.id} due in {days_until_due} days")
-                            reminders_created += 1
+                    notification = Notification(
+                        id=uuid.uuid4(),
+                        user_id=booking.customer_id,
+                        title="Stay Ending / Rent Reminder",
+                        message=f"Your stay at {property_title} is scheduled to end on {booking.end_date}. Please clear any pending dues (₹{booking.amount:,.0f}) if applicable.",
+                        type="payment_reminder",
+                        link="/bookings",
+                        read=False
+                    )
+                    db.add(notification)
+                    reminders_created += 1
         
         db.commit()
-        logger.info(f"Created {reminders_created} rent reminders")
-        
+        logger.info(f"Created {reminders_created} total rent reminders")
     except Exception as e:
         logger.error(f"Error in rent due date check: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def check_maintenance_reminders():
+    """Send monthly maintenance reminders to owners (1st of every month)."""
+    logger.info("Running maintenance reminder check...")
+    db = SessionLocal()
+    try:
+        today = datetime.utcnow().date()
+        # Trigger on 1st of month
+        if today.day != 1:
+            return
+            
+        owners = db.query(Profile).filter(Profile.maintenance_reminders_enabled == True).all()
+        reminders_sent = 0
+        
+        for owner in owners:
+            notification = Notification(
+                id=uuid.uuid4(),
+                user_id=owner.user_id,
+                title="Monthly Maintenance Check",
+                message="It's the 1st of the month! Routine inspection and maintenance check for your properties are recommended.",
+                type="maintenance_reminder",
+                link="/owner/dashboard",
+                read=False
+            )
+            db.add(notification)
+            reminders_sent += 1
+            
+        db.commit()
+        logger.info(f"Sent {reminders_sent} maintenance reminders to owners.")
+    except Exception as e:
+        logger.error(f"Error in maintenance reminder check: {e}")
         db.rollback()
     finally:
         db.close()
@@ -235,6 +305,15 @@ def setup_scheduler(app):
             name="Daily Rent Reminder Check",
             replace_existing=True
         )
+
+        # Monthly maintenance reminder at 10 AM on the 1st
+        scheduler.add_job(
+            check_maintenance_reminders,
+            CronTrigger(day=1, hour=10, minute=0),
+            id="maintenance_reminder_job",
+            name="Monthly Maintenance Check",
+            replace_existing=True
+        )
         
         # Check pending payments twice daily
         scheduler.add_job(
@@ -273,5 +352,4 @@ def setup_scheduler(app):
         
     except ImportError:
         logger.warning("APScheduler not installed. Background tasks disabled.")
-        logger.warning("Install with: pip install apscheduler")
         return None
