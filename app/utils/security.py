@@ -92,10 +92,25 @@ async def get_current_active_user(
 
 
 def get_user_role(user: User, db: Session) -> Optional[str]:
-    """Get the primary role of a user."""
-    from app.models import UserRole
+    """Get the primary role of a user.
+    
+    If the user is an owner, they are only considered an 'owner' if their
+    KYC approval_status is 'approved'. Otherwise, they are treated as 'customer'.
+    """
+    from app.models import UserRole, AppRole, OwnersProfile, KycStatus
     user_role = db.query(UserRole).filter(UserRole.user_id == user.id).first()
-    return user_role.role.value if user_role else None
+    if not user_role:
+        return None
+        
+    role_val = user_role.role.value
+    
+    # If owner, check approval status
+    if user_role.role == AppRole.owner:
+        owner_profile = db.query(OwnersProfile).filter(OwnersProfile.user_id == user.id).first()
+        if not owner_profile or owner_profile.approval_status != KycStatus.approved:
+            return AppRole.customer.value
+            
+    return role_val
 
 
 def require_role(required_role: str):

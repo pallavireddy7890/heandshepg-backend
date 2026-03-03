@@ -100,10 +100,34 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
     # Check if email already exists as a registered user
     existing_user = db.query(User).filter(User.email == email_lower).first()
     if existing_user and existing_user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already exists"
-        )
+        # Check current role
+        user_role = db.query(UserRole).filter(UserRole.user_id == existing_user.id).first()
+        current_role = user_role.role if user_role else AppRole.customer
+        
+        # Scenario 1: Tenant trying to sign up as Owner -> BLOCK
+        if current_role == AppRole.customer and user_data.role == AppRole.owner:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This email is already registered as a tenant account. Tenants cannot become owners."
+            )
+            
+        # Scenario 2: Owner trying to sign up as Tenant -> ALLOW if NOT APPROVED
+        if current_role == AppRole.owner and user_data.role == AppRole.customer:
+            from app.models import OwnersProfile, KycStatus
+            owner_profile = db.query(OwnersProfile).filter(OwnersProfile.user_id == existing_user.id).first()
+            if owner_profile and owner_profile.approval_status == KycStatus.approved:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This email is already registered as a verified owner. Verified owners cannot become tenants."
+                )
+            # If not approved, we allow them to continue with the signup as customer
+            pass
+        else:
+            # Otherwise, standard block for duplicate email
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already exists"
+            )
     
     # Check if phone number already exists (in registered profiles)
     if user_data.phone:
@@ -115,10 +139,19 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
                 # Only block if the profile belongs to a verified user
                 profile_owner = db.query(User).filter(User.id == existing_profile.user_id).first()
                 if profile_owner and profile_owner.is_verified:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Phone number already exists"
-                    )
+                    # Allow if it's an unapproved owner transitioning to tenant (same email)
+                    is_transition = False
+                    if user_data.role == AppRole.customer:
+                        from app.models import OwnersProfile, KycStatus
+                        owner_prof = db.query(OwnersProfile).filter(OwnersProfile.user_id == profile_owner.id).first()
+                        if owner_prof and owner_prof.approval_status != KycStatus.approved and profile_owner.email == email_lower:
+                            is_transition = True
+                    
+                    if not is_transition:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Phone number already exists"
+                        )
             
             # Also check pending verifications (someone started signup but hasn't verified yet)
             from app.models import EmailVerification as EV
@@ -128,10 +161,10 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
                 EV.expires_at > datetime.utcnow()
             ).first()
             if pending_phone and pending_phone.email != email_lower:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Phone number already exists"
-                )
+                # If a phone number is pending for a DIFFERENT email, allow taking it over.
+                # This solves the "mistyped email" scenario where the phone is locked.
+                db.delete(pending_phone)
+                db.commit()
     
     # Create verification and send OTP
     verification, error = EmailVerificationService.create_verification(
@@ -197,6 +230,42 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
     # Double-check: prevent race condition where two users sign up with same email/phone simultaneously
     existing_user = db.query(User).filter(User.email == user_data["email"]).first()
     if existing_user and existing_user.is_verified:
+        # Check if we are transitioning from owner to customer
+        user_role_record = db.query(UserRole).filter(UserRole.user_id == existing_user.id).first()
+        current_role = user_role_record.role if user_role_record else AppRole.customer
+        
+        if current_role == AppRole.owner and user_data["role"] == AppRole.customer:
+            # Allow transition for unapproved owners
+            from app.models import OwnersProfile, KycStatus
+            owner_profile = db.query(OwnersProfile).filter(OwnersProfile.user_id == existing_user.id).first()
+            if owner_profile and owner_profile.approval_status != KycStatus.approved:
+                # Transition: Update role and password
+                user_role_record.role = AppRole.customer
+                existing_user.hashed_password = user_data["hashed_password"]
+                # Optionally delete or reset owner profile
+                db.delete(verification)
+                db.commit()
+                
+                # Get/Create profile to return
+                profile = db.query(Profile).filter(Profile.user_id == existing_user.id).first()
+                if not profile:
+                    profile = Profile(
+                        user_id=existing_user.id,
+                        name=user_data["name"],
+                        email=user_data["email"],
+                        phone=normalize_phone(user_data.get("phone")) if user_data.get("phone") else None,
+                    )
+                    db.add(profile)
+                    db.commit()
+                
+                access_token = create_access_token(data={"sub": str(existing_user.id), "email": existing_user.email})
+                return AuthResponse(
+                    user=UserResponse.model_validate(existing_user),
+                    profile=ProfileResponse.model_validate(profile),
+                    role=AppRoleEnum.customer,
+                    token=Token(access_token=access_token),
+                )
+        
         db.delete(verification)
         db.commit()
         raise HTTPException(

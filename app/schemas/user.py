@@ -24,7 +24,7 @@ class UserSignUp(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     name: str = Field(..., min_length=2)
-    phone: str = Field(..., min_length=10, max_length=15, description="Phone number with country code")
+    phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$", description="Phone number (10 digits) or with country code (+...)")
     role: AppRoleEnum = AppRoleEnum.customer
 
 
