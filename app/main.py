@@ -114,9 +114,10 @@ async def lifespan(app: FastAPI):
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ready")
         
-        # Add missing columns to profiles table (safe to run on every startup)
+        # Sync missing columns for ALL tables (safe to run on every startup)
         with engine.connect() as conn:
-            profile_columns = [
+            sync_statements = [
+                # === PROFILES ===
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS payment_reminders_enabled BOOLEAN DEFAULT TRUE",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_reminder_day INTEGER DEFAULT 1",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_due_day INTEGER DEFAULT 5",
@@ -138,14 +139,68 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS college_company_id_url TEXT",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_verification_status VARCHAR(20) DEFAULT 'pending'",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS hosting_since DATE",
+                # === BOOKINGS ===
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS bed_id UUID REFERENCES room_beds(id) ON DELETE SET NULL",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS maintenance_charge INTEGER DEFAULT 0",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rent_paid BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS deposit_paid BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS maintenance_paid BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS last_payment_date TIMESTAMPTZ",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS stay_type VARCHAR(20) DEFAULT 'monthly'",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS duration_days INTEGER",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payment_id UUID",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS customer_documents TEXT[]",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS customer_snapshot JSONB",
+                # === PAYMENTS ===
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'online'",
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS offline_reference TEXT",
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS verified_by_id UUID REFERENCES users(id) ON DELETE SET NULL",
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_date TIMESTAMPTZ",
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS commission_amount INTEGER DEFAULT 0",
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_metadata JSONB",
+                # === ROOMS ===
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS security_deposit INTEGER",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS monthly_price INTEGER",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS daily_price INTEGER",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS maintenance_charge INTEGER DEFAULT 0",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS stay_type VARCHAR(20) DEFAULT 'monthly'",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS min_stay INTEGER DEFAULT 1",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS is_extension_allowed BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS complementaries TEXT[]",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS room_description TEXT",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS area_sqft INTEGER",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS width_ft INTEGER",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS has_ventilation BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS floor_number INTEGER DEFAULT 1",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS room_number VARCHAR(20)",
+                # === WALLET_TRANSACTIONS ===
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS payer_id UUID REFERENCES users(id) ON DELETE SET NULL",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS receiver_id UUID REFERENCES users(id) ON DELETE SET NULL",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS payment_type VARCHAR(20) DEFAULT 'total'",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(50)",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS bank_ifsc_code VARCHAR(20)",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS bank_name VARCHAR(255)",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS admin_notes TEXT",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS otp_verified BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS otp_verified_at TIMESTAMPTZ",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'online'",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS offline_notes TEXT",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS offline_reference TEXT",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS razorpay_payment_id VARCHAR(255)",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS razorpay_order_id VARCHAR(255)",
+                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS description TEXT",
+                # === WALLETS ===
+                "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS pending_balance INTEGER DEFAULT 0",
             ]
-            for sql in profile_columns:
+            for sql in sync_statements:
                 try:
                     conn.execute(text(sql))
                 except Exception as e:
-                    logger.warning(f"Column add note: {e}")
+                    logger.warning(f"Column sync note: {e}")
             conn.commit()
-            logger.info("Profile columns sync complete")
+            logger.info("All table columns synced successfully")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         if not settings.debug:
