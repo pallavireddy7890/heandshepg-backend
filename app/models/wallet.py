@@ -79,6 +79,7 @@ class WalletTransaction(Base):
     # Payment reference
     payment_method = Column(String(20), default='online')  # 'online' or 'offline'
     offline_notes = Column(Text)  # Transaction ID or notes for offline payment
+    offline_reference = Column(Text)  # UPI reference or bank transfer ID
     razorpay_payment_id = Column(String(255))
     razorpay_order_id = Column(String(255))
     

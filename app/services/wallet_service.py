@@ -2,11 +2,13 @@
 import logging
 import random
 import string
-from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from datetime import datetime, timedelta, date
+from typing import Optional, Tuple, List
 from uuid import UUID
+import calendar
 
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.models import Wallet, WalletTransaction, TransactionOTP, TransactionType, TransactionStatus, Profile
 from app.services.notification_service import NotificationService
@@ -19,6 +21,54 @@ class WalletService:
     
     OTP_EXPIRY_MINUTES = 10
     OTP_LENGTH = 6
+
+    @staticmethod
+    def get_billing_period(start_date: date, current_date: date) -> Tuple[date, date]:
+        """Calculate the start and end of the current billing cycle (1 month long)."""
+        # If today is before start_date, the first cycle is upcoming
+        if current_date < start_date:
+            return start_date, start_date + timedelta(days=30)
+            
+        # Calculate how many full months have passed
+        years_diff = current_date.year - start_date.year
+        months_diff = current_date.month - start_date.month
+        total_months = years_diff * 12 + months_diff
+        
+        def get_date_for_month(base_date: date, month_offset: int) -> date:
+            m = (base_date.month + month_offset - 1) % 12 + 1
+            y = base_date.year + (base_date.month + month_offset - 1) // 12
+            last_day_of_m = calendar.monthrange(y, m)[1]
+            return date(y, m, min(base_date.day, last_day_of_m))
+
+        period_start = get_date_for_month(start_date, total_months)
+        
+        # If calculated period_start is in the future, it means we are still in previous month's cycle
+        if period_start > current_date:
+            total_months -= 1
+            period_start = get_date_for_month(start_date, total_months)
+            
+        period_end = get_date_for_month(start_date, total_months + 1) - timedelta(days=1)
+        
+        return period_start, period_end
+
+    @staticmethod
+    def check_payment_overlap(db: Session, booking_id: UUID, period_start: date, period_end: date) -> bool:
+        """Check if any successful rent/total payment exists for the given booking in the specified period."""
+        # Check WalletTransactions
+        # Type 'rent' or 'total', status 'completed'
+        # Within the period (created_at)
+        start_dt = datetime.combine(period_start, datetime.min.time())
+        end_dt = datetime.combine(period_end, datetime.max.time())
+        
+        existing = db.query(WalletTransaction).filter(
+            WalletTransaction.booking_id == booking_id,
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.payment_type.in_(['rent', 'total']),
+            WalletTransaction.created_at >= start_dt,
+            WalletTransaction.created_at <= end_dt
+        ).first()
+        
+        return existing is not None
     
     @staticmethod
     def get_or_create_wallet(db: Session, user_id: UUID) -> Wallet:
@@ -41,14 +91,67 @@ class WalletService:
     
     @staticmethod
     def get_balance(db: Session, user_id: UUID) -> dict:
-        """Get wallet balance for a user."""
+        """Get wallet balance for a user with online/offline breakdown."""
         wallet = WalletService.get_or_create_wallet(db, user_id)
+        
+        # Calculate breakdowns from transactions
+        # Online completed
+        online_completed = db.query(func.sum(WalletTransaction.amount)).filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.payment_method == 'online',
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.transaction_type == TransactionType.credit
+        ).scalar() or 0
+        
+        # Offline completed
+        offline_completed = db.query(func.sum(WalletTransaction.amount)).filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.payment_method != 'online',
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.transaction_type == TransactionType.credit
+        ).scalar() or 0
+        
+        # Online pending
+        online_pending = db.query(func.sum(WalletTransaction.amount)).filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.payment_method == 'online',
+            WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified]),
+            WalletTransaction.transaction_type == TransactionType.credit
+        ).scalar() or 0
+        
+        # Offline pending
+        offline_pending = db.query(func.sum(WalletTransaction.amount)).filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.payment_method != 'online',
+            WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified]),
+            WalletTransaction.transaction_type == TransactionType.credit
+        ).scalar() or 0
+
+        # Calculate withdrawals (completed)
+        withdrawals_completed = db.query(func.sum(WalletTransaction.amount)).filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.transaction_type == TransactionType.withdrawal,
+            WalletTransaction.status == TransactionStatus.completed
+        ).scalar() or 0
+        
+        # Calculate withdrawals (pending)
+        withdrawals_pending = db.query(func.sum(WalletTransaction.amount)).filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.transaction_type == TransactionType.withdrawal,
+            WalletTransaction.status == TransactionStatus.pending
+        ).scalar() or 0
+
         return {
             "balance": wallet.balance,
             "pending_balance": wallet.pending_balance,
-            "available_balance": wallet.balance - wallet.pending_balance,
+            "available_balance": online_completed - withdrawals_completed - withdrawals_pending,
+            "online_balance": online_completed - withdrawals_completed,
+            "offline_balance": offline_completed,
+            "pending_online": online_pending,
+            "pending_offline": offline_pending,
+            "pending_withdrawals": withdrawals_pending,
             "currency": "INR",
-            "balance_inr": wallet.balance / 100,  # Convert paise to INR
+            "balance_inr": wallet.balance / 100,
         }
     
     @staticmethod
@@ -102,7 +205,9 @@ class WalletService:
         receiver_id: UUID,
         amount: int,
         payment_type: str = 'total',
+        payment_method: str = 'offline',
         offline_notes: Optional[str] = None,
+        offline_reference: Optional[str] = None,
         description: Optional[str] = None,
     ) -> WalletTransaction:
         """Create a new offline wallet transaction."""
@@ -115,8 +220,9 @@ class WalletService:
             payment_type=payment_type,
             transaction_type=TransactionType.credit,
             status=TransactionStatus.pending,
-            payment_method='offline',
+            payment_method=payment_method,
             offline_notes=offline_notes,
+            offline_reference=offline_reference,
             description=description,
         )
         db.add(transaction)
@@ -421,6 +527,7 @@ class WalletService:
                 "otp_verified": txn.otp_verified,
                 "payment_method": txn.payment_method,
                 "offline_notes": txn.offline_notes,
+                "offline_reference": txn.offline_reference,
                 "razorpay_payment_id": txn.razorpay_payment_id,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
             })

@@ -18,7 +18,7 @@ from app.schemas import (
 )
 from app.utils.security import get_current_user, require_role
 from app.utils.notifications import notify_booking_created, notify_booking_accepted, notify_booking_rejected
-from app.services.vacancy import get_bed_vacancy, is_bed_available_for_extension
+from app.services.vacancy import get_bed_vacancy, is_bed_available_for_extension, sync_room_vacancy
 
 require_admin = require_role("admin")
 
@@ -415,20 +415,8 @@ async def update_booking_status(
     
     # If the booking is being marked as completed (checkout), restore the vacancy
     if new_status == "completed" and booking.status != "completed" and booking.room_id:
-        room = db.query(Room).filter(Room.id == booking.room_id).first()
-        if room:
-            if room.vacancy_count is not None:
-                room.vacancy_count += 1
-            else:
-                room.vacancy_count = 1
-            
-            # Ensure it's marked as available if it was previously full
-            room.is_available = True
-            
-            # Log vacancy update
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"Vacancy replenished for room {room.id} after booking completed. New count: {room.vacancy_count}")
+            # Sync vacancy using centralized service
+            sync_room_vacancy(db, room.id)
 
     booking.status = new_status
     db.commit()
@@ -476,20 +464,8 @@ async def cancel_booking(
     
     # If the booking was confirmed/paid/checked-in, we should restore the vacancy
     if booking.status in ["paid", "checked_in", "active", "vacate_requested"] and booking.room_id:
-        room = db.query(Room).filter(Room.id == booking.room_id).first()
-        if room:
-            if room.vacancy_count is not None:
-                room.vacancy_count += 1
-            else:
-                room.vacancy_count = 1
-            
-            # Ensure it's marked as available if it was previously full
-            room.is_available = True
-            
-            # Log vacancy update
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"Vacancy replenished for room {room.id} after cancellation. New count: {room.vacancy_count}")
+            # Sync vacancy using centralized service
+            sync_room_vacancy(db, room.id)
 
     booking.status = "cancelled"
     booking.cancelled_at = datetime.utcnow()

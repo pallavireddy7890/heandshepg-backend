@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import User, Profile, Property, Booking, Payment, Invoice, Room, PaymentStatus, BookingStatus
 from app.utils.security import get_current_user, require_role, get_user_role
+from app.services.vacancy import sync_room_vacancy
 
 require_owner = require_role("owner")
 
@@ -409,7 +410,7 @@ async def get_owner_tenants(
         # Get paid/checked_in/active bookings (tenants actually occupying beds)
         active_bookings = db.query(Booking).filter(
             Booking.property_id.in_(property_ids),
-            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
+            Booking.status.in_([BookingStatus.requested, BookingStatus.accepted, BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
         ).offset(skip).limit(limit).all()
         
         result = []
@@ -664,12 +665,8 @@ async def add_tenant_to_room(
         )
         db.add(booking)
 
-        # Decrement vacancy
-        if room.vacancy_count is not None and room.vacancy_count > 0:
-            room.vacancy_count -= 1
-            if room.vacancy_count == 0:
-                room.is_available = False
-
+        # Sync vacancy using centralized service
+        sync_room_vacancy(db, room.id)
         db.commit()
 
         return {
@@ -707,15 +704,9 @@ async def remove_tenant_from_room(
         # Cancel the booking
         booking.status = "vacated"
 
-        # Restore vacancy
+        # Sync vacancy using centralized service
         if booking.room_id:
-            room = db.query(Room).filter(Room.id == booking.room_id).first()
-            if room:
-                if room.vacancy_count is not None:
-                    room.vacancy_count += 1
-                else:
-                    room.vacancy_count = 1
-                room.is_available = True
+            sync_room_vacancy(db, booking.room_id)
 
         db.commit()
         return {"message": "Tenant removed successfully"}

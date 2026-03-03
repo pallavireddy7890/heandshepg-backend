@@ -30,7 +30,6 @@ from app.routers import (
     owner_router,
     roommates_router,
     referrals_router,
-    payments_router,
     wallet_router,
     maintenance_router,
 )
@@ -84,7 +83,7 @@ async def lifespan(app: FastAPI):
             enums = {
                 "gender_preference": ("male", "female", "mixed"),
                 "booking_status": ("requested", "accepted", "paid", "checked_in", "active", "completed", "cancelled", "vacate_requested", "vacated"),
-                "payment_status": ("pending", "completed", "failed", "refunded"),
+                "payment_status": ("pending", "completed", "failed", "refunded", "pending_verification"),
                 "payment_type": ("booking", "monthly_rent", "refund", "commission"),
                 "invoice_status": ("pending", "paid", "overdue", "cancelled"),
                 "transaction_type": ("credit", "debit", "hold", "release"),
@@ -229,7 +228,6 @@ app.include_router(admin_router, prefix="/api")
 app.include_router(owner_router, prefix="/api")
 app.include_router(roommates_router, prefix="/api")
 app.include_router(referrals_router, prefix="/api")
-app.include_router(payments_router, prefix="/api")
 app.include_router(wallet_router, prefix="/api")
 app.include_router(maintenance_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")

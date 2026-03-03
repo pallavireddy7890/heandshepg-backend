@@ -1,3 +1,4 @@
+
 """Wallet router for payment and transaction management."""
 from typing import Optional
 from uuid import UUID
@@ -9,8 +10,10 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import User, Booking, Profile, Wallet, WalletTransaction, TransactionType, TransactionStatus, Property, Room
-from app.utils.security import get_current_user
+from app.utils.security import get_current_user, get_user_role
 from app.services.wallet_service import WalletService
+from app.services.booking_service import BookingService
+from app.services.vacancy import sync_room_vacancy
 from app.config import get_settings
 from app.utils.notifications import notify_payment_received, notify_payment_verified
 
@@ -25,6 +28,11 @@ class WalletBalanceResponse(BaseModel):
     balance: int
     pending_balance: int
     available_balance: int
+    online_balance: int
+    offline_balance: int
+    pending_online: int
+    pending_offline: int
+    pending_withdrawals: int
     currency: str
     balance_inr: float
 
@@ -48,7 +56,19 @@ class InitiateOfflinePaymentRequest(BaseModel):
     booking_id: str
     amount: float  # Amount in INR
     payment_type: Optional[str] = "total"  # total, rent, deposit
+    payment_method: Optional[str] = "cash"  # cash, upi, bank_transfer, other
     offline_notes: Optional[str] = None
+    offline_reference: Optional[str] = None
+
+
+class CollectOfflinePaymentRequest(BaseModel):
+    booking_id: str
+    amount: float  # Amount in INR
+    payment_type: str = "total"  # total, rent, deposit
+    payment_method: str = "cash"  # cash, upi, bank_transfer, other
+    offline_notes: Optional[str] = None
+    offline_reference: Optional[str] = None
+    force_payment: Optional[bool] = False  # Set to True to bypass overlap checks
 
 
 class VerifyRazorpayRequest(BaseModel):
@@ -128,6 +148,7 @@ async def get_my_pending_payments(
             "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
             "payment_method": txn.payment_method,
             "offline_notes": txn.offline_notes,
+            "offline_reference": txn.offline_reference,
             "created_at": txn.created_at.isoformat() if txn.created_at else None,
         })
     
@@ -171,6 +192,7 @@ async def get_owner_pending_payments(
             "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
             "payment_method": txn.payment_method,
             "offline_notes": txn.offline_notes,
+            "offline_reference": txn.offline_reference,
             "created_at": txn.created_at.isoformat() if txn.created_at else None,
         })
     
@@ -305,6 +327,8 @@ async def initiate_offline_wallet_payment(
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
     
     # Amount in paise
+    if request.amount <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be greater than zero")
     amount_paise = int(request.amount * 100)
     
     # Create offline transaction
@@ -316,8 +340,10 @@ async def initiate_offline_wallet_payment(
         receiver_id=booking.owner_id,
         amount=amount_paise,
         payment_type=request.payment_type,
+        payment_method=request.payment_method,
         offline_notes=request.offline_notes,
-        description=f"Offline payment ({request.payment_type}) for booking {request.booking_id}",
+        offline_reference=request.offline_reference,
+        description=f"Offline payment ({request.payment_type}) via {request.payment_method} for booking {request.booking_id}",
     )
     
     return {
@@ -458,52 +484,13 @@ async def verify_transaction_otp(
     if not complete_success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=complete_message)
     
-    # Update booking status
+    # Update booking status via centralized service
     if transaction.booking_id:
-        booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
-        if booking:
-            # Update specific flags based on payment_type
-            p_type = transaction.payment_type
-            if p_type == 'rent':
-                booking.rent_paid = True
-            elif p_type == 'deposit':
-                booking.deposit_paid = True
-            elif p_type == 'maintenance':
-                booking.maintenance_paid = True
-            elif p_type == 'total':
-                booking.rent_paid = True
-                booking.deposit_paid = True
-                booking.maintenance_paid = True
-            
-            # Update last payment date for grace period logic
-            if p_type in ['rent', 'total']:
-                booking.last_payment_date = func.now()
-            
-            # Update overall status
-            # If both rent and deposit are paid, it's fully paid
-            if booking.rent_paid and booking.deposit_paid:
-                booking.status = "paid"
-            # If at least rent is paid, consider them "checked_in"
-            elif booking.rent_paid:
-                booking.status = "checked_in"
-            
-            # AUTOMATIC VACANCY DEDUCTION
-            # If the booking is now "paid" or "checked_in", and it has a room assigned,
-            # we should decrease the vacancy count by 1.
-            if booking.status in ["paid", "checked_in"] and booking.room_id:
-                room = db.query(Room).filter(Room.id == booking.room_id).first()
-                if room and room.vacancy_count and room.vacancy_count > 0:
-                    room.vacancy_count -= 1
-                    # If vacancy reaches 0, mark as not available
-                    if room.vacancy_count == 0:
-                        room.is_available = False
-                        
-                    # Log vacancy update
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.info(f"Vacancy deducted for room {room.id}. New count: {room.vacancy_count}")
-            
-            db.commit()
+        BookingService.handle_payment_completion(
+            db=db, 
+            booking_id=transaction.booking_id, 
+            payment_type=transaction.payment_type
+        )
     
     # Get updated balance
     balance = WalletService.get_balance(db, current_user.id)
@@ -567,7 +554,8 @@ async def verify_offline_transaction(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Offline transaction not found")
     
     # Verify current user is the owner (receiver) or admin
-    if str(transaction.receiver_id) != str(current_user.id) and current_user.role != "admin":
+    user_role = get_user_role(current_user, db)
+    if str(transaction.receiver_id) != str(current_user.id) and user_role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the property owner or admin can verify offline payments"
@@ -579,45 +567,156 @@ async def verify_offline_transaction(
     if not complete_success:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=complete_message)
     
-    # Update booking status (Logic duplicated from verify-otp, ideally should be in a shared service method)
+    # Update booking status via centralized service
     if transaction.booking_id:
-        booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
-        if booking:
-            p_type = transaction.payment_type
-            if p_type == 'rent':
-                booking.rent_paid = True
-            elif p_type == 'deposit':
-                booking.deposit_paid = True
-            elif p_type == 'maintenance':
-                booking.maintenance_paid = True
-            elif p_type == 'total':
-                booking.rent_paid = True
-                booking.deposit_paid = True
-                booking.maintenance_paid = True
-            
-            # Update last payment date for grace period logic
-            if p_type in ['rent', 'total']:
-                booking.last_payment_date = func.now()
-            
-            if booking.rent_paid and booking.deposit_paid:
-                booking.status = "paid"
-            elif booking.rent_paid:
-                booking.status = "checked_in"
-            
-            # Vacancy deduction
-            if booking.status in ["paid", "checked_in"] and booking.room_id:
-                room = db.query(Room).filter(Room.id == booking.room_id).first()
-                if room and room.vacancy_count and room.vacancy_count > 0:
-                    room.vacancy_count -= 1
-                    if room.vacancy_count == 0:
-                        room.is_available = False
-            
-            db.commit()
+        BookingService.handle_payment_completion(
+            db=db, 
+            booking_id=transaction.booking_id, 
+            payment_type=transaction.payment_type
+        )
     
     return {
         "success": True,
         "message": "Offline payment verified successfully",
         "transaction_id": str(transaction.id),
+    }
+
+
+@router.post("/reject-offline")
+async def reject_offline_transaction(
+    transaction_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Reject an offline transaction (Owner only).
+    """
+    # Get transaction
+    transaction = db.query(WalletTransaction).filter(
+        WalletTransaction.id == transaction_id,
+        WalletTransaction.payment_method == 'offline',
+        WalletTransaction.status != TransactionStatus.completed
+    ).first()
+    
+    if not transaction:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending offline transaction not found")
+    
+    # Verify current user is the owner (receiver) or admin
+    user_role = get_user_role(current_user, db)
+    if str(transaction.receiver_id) != str(current_user.id) and user_role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the property owner or admin can reject offline payments"
+        )
+    
+    # Update transaction status
+    transaction.status = TransactionStatus.rejected
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Offline payment rejected successfully",
+        "transaction_id": str(transaction.id),
+    }
+
+
+
+@router.post("/collect-offline-payment")
+async def collect_offline_payment(
+    request: CollectOfflinePaymentRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Directly record an offline payment (Owner/Admin only).
+    Creates and completes a transaction in one step.
+    """
+    from sqlalchemy import func
+    
+    # Get booking
+    booking = db.query(Booking).filter(Booking.id == request.booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+        
+    # Verify authorization (Owner or Admin)
+    user_role = get_user_role(current_user, db)
+    if user_role != "admin" and str(booking.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to collect payment for this booking")
+        
+    # Get owner's wallet
+    owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
+    
+    p_type = request.payment_type
+    
+    # Amount validation: Must match booking amount (room rent) if it's 'rent' or 'total'
+    booking_amount_inr = booking.amount
+    if p_type in ['rent', 'total'] and abs(request.amount - booking_amount_inr) > 0.01:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Amount mismatch. Rent for this room is \u20b9{booking_amount_inr}. You entered \u20b9{request.amount}."
+        )
+
+    # Billing cycle overlap detection
+    from datetime import date
+    if p_type in ['rent', 'total'] and not request.force_payment:
+        period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
+        has_overlap = WalletService.check_payment_overlap(db, booking.id, period_start, period_end)
+        
+        if has_overlap:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Payment already exists for the current cycle ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to pay for the next month?"
+            )
+
+    # Amount in paise
+    if request.amount <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be greater than zero")
+    amount_paise = int(request.amount * 100)
+    
+    # 1. Create offline transaction
+    transaction = WalletService.create_offline_transaction(
+        db=db,
+        wallet_id=owner_wallet.id,
+        booking_id=UUID(request.booking_id),
+        payer_id=booking.customer_id,
+        receiver_id=booking.owner_id,
+        amount=amount_paise,
+        payment_type=request.payment_type,
+        payment_method=request.payment_method,
+        offline_notes=request.offline_notes,
+        offline_reference=request.offline_reference,
+        description=f"Direct offline payment collection ({request.payment_type}) via {request.payment_method} by owner",
+    )
+    
+    # 2. Complete it immediately (bypass OTP)
+    complete_success, complete_message = WalletService.complete_transaction(db, transaction.id, bypass_otp=True)
+    
+    if not complete_success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=complete_message)
+        
+    # 3. Update booking status via centralized service
+    BookingService.handle_payment_completion(
+        db=db, 
+        booking_id=booking.id, 
+        payment_type=request.payment_type
+    )
+                
+    db.commit()
+    
+    # Notify customer
+    try:
+        from app.models import Property
+        prop = db.query(Property).filter(Property.id == booking.property_id).first()
+        property_title = prop.title if prop else "Property"
+        await notify_payment_verified(db, booking.customer_id, request.amount, property_title)
+    except Exception:
+        pass
+        
+    return {
+        "success": True,
+        "message": "Payment collected and recorded successfully",
+        "transaction_id": str(transaction.id),
+        "booking_status": booking.status
     }
 
 
@@ -703,3 +802,61 @@ async def request_withdrawal(
         "transaction_id": str(transaction.id),
         "amount": request.amount
     }
+@router.delete("/transactions/{transaction_id}")
+async def delete_transaction(
+    transaction_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Delete a transaction and reverse its impact on wallet balance (Owner only).
+    """
+    # Get transaction
+    transaction = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+        
+    # Verify ownership
+    user_role = get_user_role(current_user, db)
+    if user_role != "admin" and str(transaction.receiver_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized to delete this transaction")
+        
+    # Reverse wallet impact if necessary
+    # If completed, deduct from owner's main balance. If pending/otp_sent, deduct from pending_balance.
+    wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
+    if wallet:
+        if transaction.status == TransactionStatus.completed:
+            wallet.balance = max(0, wallet.balance - transaction.amount)
+        elif transaction.status in [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified]:
+            wallet.pending_balance = max(0, wallet.pending_balance - transaction.amount)
+            
+    # Update booking status if necessary (might be complex to fully revert rent_paid, but let's at least clear relevant flags)
+    if transaction.booking_id and transaction.status == TransactionStatus.completed:
+        booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
+        if booking:
+            p_type = transaction.payment_type
+            if p_type == 'rent':
+                booking.rent_paid = False
+            elif p_type == 'deposit':
+                booking.deposit_paid = False
+            elif p_type == 'maintenance':
+                booking.maintenance_paid = False
+            elif p_type == 'total':
+                booking.rent_paid = False
+                booking.deposit_paid = False
+                booking.maintenance_paid = False
+            
+            # If we delete a payment that made the booking "active", it should stay active
+            # but if it was "paid", we might need to downgrade if rent is no longer paid
+            if booking.status == "paid" and not booking.rent_paid:
+                booking.status = "accepted"
+            
+            # SYNC VACANCY
+            if booking.room_id:
+                sync_room_vacancy(db, booking.room_id)
+
+    # Delete transaction (CASCADE will handle OTPs)
+    db.delete(transaction)
+    db.commit()
+    
+    return {"message": "Transaction deleted successfully"}
