@@ -113,6 +113,39 @@ async def lifespan(app: FastAPI):
         
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ready")
+        
+        # Add missing columns to profiles table (safe to run on every startup)
+        with engine.connect() as conn:
+            profile_columns = [
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS payment_reminders_enabled BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_reminder_day INTEGER DEFAULT 1",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_due_day INTEGER DEFAULT 5",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_reminder_message TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS maintenance_reminders_enabled BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS email_notifications BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sms_notifications BOOLEAN DEFAULT TRUE",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS push_notifications BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS hide_contact_info BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS bank_account_number VARCHAR(50)",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS bank_ifsc_code VARCHAR(20)",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS bank_name VARCHAR(255)",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS pan_card_url TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS gst_doc_url TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS aadhar_front_url TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS aadhar_back_url TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS dl_front_url TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS dl_back_url TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS college_company_id_url TEXT",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_verification_status VARCHAR(20) DEFAULT 'pending'",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS hosting_since DATE",
+            ]
+            for sql in profile_columns:
+                try:
+                    conn.execute(text(sql))
+                except Exception as e:
+                    logger.warning(f"Column add note: {e}")
+            conn.commit()
+            logger.info("Profile columns sync complete")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         if not settings.debug:
