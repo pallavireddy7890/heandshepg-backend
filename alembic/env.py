@@ -5,27 +5,31 @@ from alembic import context
 import sys
 from pathlib import Path
 import os
-from alembic import context
 
 # Add app to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.database import Base
-from app.config import get_settings
 from app.models import *  # Import all models
 
 config = context.config
+
+# Get database URL from environment or app settings
 database_url = os.getenv("DATABASE_URL")
 if not database_url:
-    raise RuntimeError("DATABASE_URL is not set")
+    try:
+        from app.config import get_settings
+        settings = get_settings()
+        database_url = settings.database_url
+    except Exception:
+        # Fall back to alembic.ini
+        database_url = config.get_main_option("sqlalchemy.url")
 
-config.set_main_option(
-    "sqlalchemy.url",
-    os.environ.get("DATABASE_URL")
-)
-# Get database URL from app settings
-# settings = get_settings()
-# config.set_main_option("sqlalchemy.url", settings.database_url)
+# Ensure we use psycopg2 (sync driver) not asyncpg
+if database_url and "+asyncpg" in database_url:
+    database_url = database_url.replace("+asyncpg", "")
+
+config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -48,8 +52,8 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    settings = get_settings()
-    connectable = create_engine(settings.database_url, poolclass=pool.NullPool)
+    url = config.get_main_option("sqlalchemy.url")
+    connectable = create_engine(url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
         context.configure(
             connection=connection, target_metadata=target_metadata
@@ -62,4 +66,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-
