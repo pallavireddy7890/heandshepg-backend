@@ -1,4 +1,5 @@
 """Notification helper utilities."""
+from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models import Notification, User, Profile
 import uuid
@@ -81,7 +82,7 @@ async def create_notification(
                             {f'<p><a href="{settings.frontend_url}{link}" style="color: #f59e0b; font-weight: bold; text-decoration: none;">View Details</a></p>' if link else ''}
                         </div>
                         <div style="background: #f9fafb; padding: 16px; text-align: center; font-size: 12px; color: #6b7280; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none;">
-                            <p style="margin: 4px 0;">&copy; 2026 He&She PG. All rights reserved.</p>
+                            <p style="margin: 4px 0;">&copy; {datetime.now().year} He&She PG. All rights reserved.</p>
                             <p style="margin: 4px 0;">Contact us: heandshepg@gmail.com</p>
                         </div>
                         </div>

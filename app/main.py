@@ -151,6 +151,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS emergency_contact_address TEXT",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS payment_reminders_enabled BOOLEAN DEFAULT TRUE",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_reminder_day INTEGER DEFAULT 1",
+                "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_reminder_days_before INTEGER DEFAULT 5",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_due_day INTEGER DEFAULT 5",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rent_reminder_message TEXT",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS maintenance_reminders_enabled BOOLEAN DEFAULT TRUE",

@@ -55,6 +55,7 @@ async def get_profile(
         "emergency_contact_address": profile.emergency_contact_address,
         "payment_reminders_enabled": profile.payment_reminders_enabled,
         "rent_reminder_day": profile.rent_reminder_day,
+        "rent_reminder_days_before": profile.rent_reminder_days_before,
         "rent_due_day": profile.rent_due_day,
         "rent_reminder_message": profile.rent_reminder_message,
         "maintenance_reminders_enabled": profile.maintenance_reminders_enabled,

@@ -199,7 +199,7 @@ class NotificationService:
                     <p>If you didn't make this change, you can disable notifications in your profile settings.</p>
                 </div>
                 <div class="footer">
-                    <p>© 2026 He&She PG. All rights reserved.</p>
+                    <p>© {datetime.now().year} He&She PG. All rights reserved.</p>
                     <p>Contact us: heandshepg@gmail.com</p>
                     <p>You can manage your notification preferences anytime in your profile settings.</p>
                 </div>
@@ -221,7 +221,7 @@ You'll now receive important updates about:
 
 If you didn't make this change, you can disable notifications in your profile settings.
 
-© 2026 He&She PG. All rights reserved.
+© {datetime.now().year} He&She PG. All rights reserved.
         """
         
         return NotificationService.send_email(user_email, subject, body_html, body_text)

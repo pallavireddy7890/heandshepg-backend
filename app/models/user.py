@@ -81,6 +81,7 @@ class Profile(Base):
     # Notification preferences
     payment_reminders_enabled = Column(Boolean, default=True)
     rent_reminder_day = Column(Integer, default=1)  # Day of month to send reminder
+    rent_reminder_days_before = Column(Integer, default=5)  # How many days before due date to start reminders
     rent_due_day = Column(Integer, default=5)       # Day of month rent is due
     rent_reminder_message = Column(Text)            # Custom reminder message template
     maintenance_reminders_enabled = Column(Boolean, default=True)

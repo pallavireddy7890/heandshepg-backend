@@ -109,6 +109,7 @@ class ProfileBase(BaseModel):
     # Notification preferences
     payment_reminders_enabled: Optional[bool] = True
     rent_reminder_day: Optional[int] = 1
+    rent_reminder_days_before: Optional[int] = 5
     rent_due_day: Optional[int] = 5
     rent_reminder_message: Optional[str] = None
     maintenance_reminders_enabled: Optional[bool] = True
@@ -174,6 +175,7 @@ class ProfileUpdate(BaseModel):
     # Notification preferences
     payment_reminders_enabled: Optional[bool] = None
     rent_reminder_day: Optional[int] = None
+    rent_reminder_days_before: Optional[int] = None
     rent_due_day: Optional[int] = None
     rent_reminder_message: Optional[str] = None
     maintenance_reminders_enabled: Optional[bool] = None

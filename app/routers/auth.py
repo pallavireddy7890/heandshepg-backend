@@ -378,7 +378,7 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
             message=welcome_msg,
             notification_type="info",
             link="/profile",
-            send_external=True
+            send_external=(role_to_assign != AppRole.owner)  # Owners get email only after KYC approval
         )
     except Exception as e:
         import logging

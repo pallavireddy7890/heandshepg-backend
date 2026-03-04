@@ -1,4 +1,5 @@
 """Admin router for audit logs, KYC approval, user management, and system settings."""
+import logging
 from typing import List, Optional, Any
 from uuid import UUID
 from datetime import datetime
@@ -13,6 +14,7 @@ from app.models import User, Profile, UserRole, OwnersProfile, AuditLog, SystemS
 from app.utils.security import get_current_user, require_role
 
 require_admin = require_role("admin")
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -870,16 +872,21 @@ async def create_admin_announcement(
             UserRole.role == AppRole.customer
         ).all()
     
-    # 3. Create notifications for all target users
+    # 3. Create notifications for all target users (with email + SMS)
     sent_count = 0
+    from app.utils.notifications import create_notification
     for user in users:
-        notification = Notification(
-            user_id=user.id,
-            title=f"📢 {data.title}",
-            message=data.message,
-            type="admin_announcement",
-        )
-        db.add(notification)
+        try:
+            await create_notification(
+                db=db,
+                user_id=user.id,
+                title=f"📢 {data.title}",
+                message=data.message,
+                notification_type="admin_announcement",
+                send_external=True,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send announcement notification to {user.id}: {e}")
         sent_count += 1
     
     # 4. Create audit log
