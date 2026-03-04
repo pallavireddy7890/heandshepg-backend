@@ -66,6 +66,7 @@ class Booking(Base):
     maintenance_paid = Column(Boolean, default=False)
     last_payment_date = Column(DateTime(timezone=True))
     stay_type = Column(String(20), default="monthly")  # 'monthly' or 'daily'
+    food_included = Column(Boolean, nullable=True)  # For daily stays: True=with food, False=without
     duration_days = Column(Integer)
     payment_id = Column(UUID(as_uuid=True))
     cancelled_at = Column(DateTime(timezone=True))

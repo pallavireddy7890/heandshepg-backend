@@ -24,6 +24,8 @@ class RoomBase(BaseModel):
     security_deposit: Optional[int] = Field(None, ge=0)
     monthly_price: Optional[int] = Field(None, ge=0)
     daily_price: Optional[int] = Field(None, ge=0)
+    daily_price_with_food: Optional[int] = Field(None, ge=0)
+    daily_price_without_food: Optional[int] = Field(None, ge=0)
     vacancy_count: Optional[int] = Field(0, ge=0)
     is_available: Optional[bool] = True
     stay_type: Optional[str] = "monthly"
@@ -52,6 +54,8 @@ class RoomUpdate(BaseModel):
     security_deposit: Optional[int] = Field(None, ge=0)
     monthly_price: Optional[int] = Field(None, ge=0)
     daily_price: Optional[int] = Field(None, ge=0)
+    daily_price_with_food: Optional[int] = Field(None, ge=0)
+    daily_price_without_food: Optional[int] = Field(None, ge=0)
     vacancy_count: Optional[int] = Field(None, ge=0)
     is_available: Optional[bool] = None
     stay_type: Optional[str] = None

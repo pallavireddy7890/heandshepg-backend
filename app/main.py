@@ -201,6 +201,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS area_sqft INTEGER",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS width_ft INTEGER",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS has_ventilation BOOLEAN DEFAULT TRUE",
+                # === ROOM FOOD PRICING ===
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS daily_price_with_food INTEGER",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS daily_price_without_food INTEGER",
                 # === ROOM_BEDS ===
                 "ALTER TABLE room_beds ADD COLUMN IF NOT EXISTS bed_number VARCHAR(20)",
                 "ALTER TABLE room_beds ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'available'",
@@ -219,6 +222,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT",
                 "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS customer_documents TEXT[]",
                 "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS customer_snapshot JSONB",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS food_included BOOLEAN",
                 # === PAYMENTS ===
                 "ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'online'",
                 "ALTER TABLE payments ADD COLUMN IF NOT EXISTS offline_reference TEXT",

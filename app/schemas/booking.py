@@ -46,6 +46,7 @@ class BookingCreate(BaseModel):
     start_date: date
     end_date: Optional[date] = None
     stay_type: Optional[str] = "monthly"
+    food_included: Optional[bool] = None  # For daily stays: with/without food
     duration_days: Optional[int] = None
 
 
@@ -72,6 +73,7 @@ class BookingResponse(BaseModel):
     end_date: Optional[date]
     status: str
     stay_type: str
+    food_included: Optional[bool] = None
     duration_days: Optional[int] = None
     amount: int
     security_deposit: int

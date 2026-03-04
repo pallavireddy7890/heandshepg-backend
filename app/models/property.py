@@ -77,6 +77,8 @@ class Room(Base):
     security_deposit = Column(Integer, nullable=True)  # Security deposit per room
     monthly_price = Column(Integer)  # Price per bed per month
     daily_price = Column(Integer)  # Price per bed per day
+    daily_price_with_food = Column(Integer)  # Daily price including food
+    daily_price_without_food = Column(Integer)  # Daily price without food
     maintenance_charge = Column(Integer, default=0)  # Maintenance charge per room
     vacancy_count = Column(Integer, default=0)
     is_available = Column(Boolean, default=True)

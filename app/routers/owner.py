@@ -113,6 +113,8 @@ async def get_owner_properties(
                     "price": r.price,
                     "monthly_price": r.monthly_price,
                     "daily_price": r.daily_price,
+                    "daily_price_with_food": r.daily_price_with_food,
+                    "daily_price_without_food": r.daily_price_without_food,
                     "deposit": r.deposit,
                     "security_deposit": r.security_deposit,
                     "maintenance_charge": r.maintenance_charge,

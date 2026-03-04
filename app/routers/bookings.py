@@ -301,7 +301,7 @@ async def create_booking(
         if not room:
             raise HTTPException(status_code=400, detail="Room selection is required for daily stay")
         
-        if room.daily_price is None:
+        if room.daily_price is None and room.daily_price_with_food is None and room.daily_price_without_food is None:
              raise HTTPException(status_code=400, detail="Daily stay is not available for this room")
 
         # Calculate duration
@@ -312,8 +312,16 @@ async def create_booking(
             if duration <= 0: duration = 1
         else:
             duration = 1
+        
+        # Select price based on food preference
+        if booking_data.food_included is True and room.daily_price_with_food:
+            daily_rate = room.daily_price_with_food
+        elif booking_data.food_included is False and room.daily_price_without_food:
+            daily_rate = room.daily_price_without_food
+        else:
+            daily_rate = room.daily_price or room.price
             
-        amount = (room.daily_price or room.price) * duration
+        amount = daily_rate * duration
         security_deposit = 0
     else:
         if room.monthly_price is None and room.price is None:
@@ -355,6 +363,7 @@ async def create_booking(
         amount=amount,
         security_deposit=security_deposit,
         maintenance_charge=0 if is_daily else ((room.maintenance_charge if room else property.maintenance_charge) or 0),
+        food_included=booking_data.food_included if is_daily else None,
         status="requested",
         # Snapshot of customer info - preserved even if customer deletes account
         customer_snapshot={
@@ -689,7 +698,14 @@ async def extend_booking(
          )
 
     # Update booking
-    extra_amount = (room.daily_price or room.price) * extend_data.extra_days
+    # Use food-based pricing if available
+    if booking.food_included is True and room.daily_price_with_food:
+        daily_rate = room.daily_price_with_food
+    elif booking.food_included is False and room.daily_price_without_food:
+        daily_rate = room.daily_price_without_food
+    else:
+        daily_rate = room.daily_price or room.price
+    extra_amount = daily_rate * extend_data.extra_days
     booking.amount += extra_amount
     booking.duration_days += extend_data.extra_days
     if booking.end_date:
