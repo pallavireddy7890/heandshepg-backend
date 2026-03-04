@@ -86,8 +86,8 @@ async def lifespan(app: FastAPI):
                 "payment_status": ("pending", "completed", "failed", "refunded", "pending_verification"),
                 "payment_type": ("booking", "monthly_rent", "refund", "commission"),
                 "invoice_status": ("pending", "paid", "overdue", "cancelled"),
-                "transaction_type": ("credit", "debit", "hold", "release"),
-                "transaction_status": ("pending", "otp_sent", "verified", "completed", "failed", "refunded"),
+                "transaction_type": ("credit", "debit", "hold", "release", "withdrawal"),
+                "transaction_status": ("pending", "otp_sent", "verified", "completed", "failed", "refunded", "rejected"),
             }
             for enum_name, values in enums.items():
                 values_str = ", ".join(f"'{v}'" for v in values)
@@ -100,6 +100,21 @@ async def lifespan(app: FastAPI):
                     ))
                 except Exception as e:
                     logger.warning(f"Enum {enum_name} creation note: {e}")
+            
+            # Add missing enum values to existing enums (safe for repeated runs)
+            enum_additions = [
+                "ALTER TYPE transaction_type ADD VALUE IF NOT EXISTS 'withdrawal'",
+                "ALTER TYPE transaction_status ADD VALUE IF NOT EXISTS 'rejected'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_requested'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacated'",
+                "ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'",
+            ]
+            for sql in enum_additions:
+                try:
+                    conn.execute(text(sql))
+                except Exception as e:
+                    logger.warning(f"Enum value add note: {e}")
+            
             conn.commit()
             logger.info("PostgreSQL enum types ready")
         
