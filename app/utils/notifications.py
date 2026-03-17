@@ -73,8 +73,8 @@ async def create_notification(
                     <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background: #f3f4f6;">
                         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
                         <div style="background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 24px 20px; text-align: center; border-radius: 12px 12px 0 0;">
-                            <img src="{settings.frontend_url}/logo.png" alt="He&She PG" style="height: 48px; margin-bottom: 8px;" />
-                            <h2 style="margin: 8px 0 0; color: white;">{title}</h2>
+                            <h1 style="margin: 0; font-size: 28px; color: white;">🏠 He&She PG</h1>
+                            <h2 style="margin: 8px 0 0; font-size: 20px; color: white; font-weight: normal; opacity: 0.9;">{title}</h2>
                         </div>
                         <div style="padding: 24px; border: 1px solid #e5e7eb; border-top: none; background: #fff;">
                             <p>Hi {profile.name or 'there'},</p>

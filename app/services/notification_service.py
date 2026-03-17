@@ -164,7 +164,6 @@ class NotificationService:
         subject = "Email Notifications Enabled - He&She PG"
         from app.config import get_settings
         _settings = get_settings()
-        _logo_url = f"{_settings.frontend_url}/logo.png"
         
         body_html = f"""
         <!DOCTYPE html>
@@ -183,8 +182,8 @@ class NotificationService:
         <body>
             <div class="container">
                 <div class="header">
-                    <img src="{_logo_url}" alt="He&She PG" style="height: 48px;" />
-                    <h1 style="margin: 8px 0 0;">📧 Email Notifications Enabled</h1>
+                    <h1 style="margin: 0; font-size: 28px;">🏠 He&She PG</h1>
+                    <h2 style="margin: 8px 0 0; font-size: 20px; font-weight: normal; opacity: 0.9;">📧 Email Notifications Enabled</h2>
                 </div>
                 <div class="content">
                     <p>Hi {user_name or 'there'},</p>

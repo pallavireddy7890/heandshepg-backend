@@ -576,7 +576,7 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
         
         # Build reset URL - frontend will handle #type=recovery
         frontend_url = settings.frontend_url or "http://localhost:8080"
-        reset_url = f"{frontend_url}/auth#type=recovery&token={reset_token}"
+        reset_url = f"{frontend_url}/resetpassword?token={reset_token}"
         
         # Send password reset email
         email_subject = "Reset Your He&She PG Password"
@@ -584,8 +584,7 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f3f4f6;">
             <div style="background: linear-gradient(135deg, #f59e0b, #eab308); padding: 24px 20px; border-radius: 12px 12px 0 0; text-align: center;">
-                <img src="{frontend_url}/logo.png" alt="He&She PG" style="height: 48px; margin-bottom: 8px;" />
-                <h1 style="color: white; margin: 8px 0 0;">He&She PG</h1>
+                <h1 style="color: white; margin: 0; font-size: 28px;">🏠 He&She PG</h1>
             </div>
             <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px;">
                 <h2 style="color: #374151;">Password Reset Request</h2>
@@ -630,7 +629,7 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
     return {"message": "If the email exists, a password reset link has been sent"}
 
 
-@router.post("/reset-password")
+@router.post("/resetpassword")
 async def reset_password(data: PasswordResetConfirm, db: Session = Depends(get_db)):
     """Reset password with token."""
     from app.utils.security import decode_access_token
@@ -649,6 +648,13 @@ async def reset_password(data: PasswordResetConfirm, db: Session = Depends(get_d
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
+        )
+    
+    # Prevent reusing the current password
+    if verify_password(data.new_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your new password cannot be the same as your current password. Please choose a different password."
         )
     
     user.hashed_password = get_password_hash(data.new_password)
