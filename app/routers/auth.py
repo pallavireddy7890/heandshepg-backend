@@ -173,7 +173,8 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
         name=user_data.name,
         password=user_data.password,
         role=user_data.role.value,
-        phone=normalize_phone(user_data.phone) if user_data.phone else None
+        phone=normalize_phone(user_data.phone) if user_data.phone else None,
+        referral_code=user_data.referral_code
     )
     
     if error and not verification:
@@ -392,6 +393,40 @@ async def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
         except Exception:
             pass  # Don't fail signup if notification fails
     
+    # Handle Referral Linking
+    referral_code = user_data.get("referral_code")
+    if referral_code:
+        try:
+            from app.models.features import ReferralCode, Referral
+            ref_code_record = db.query(ReferralCode).filter(ReferralCode.code == referral_code, ReferralCode.is_active == True).first()
+            if ref_code_record:
+                # Create referral record
+                new_referral = Referral(
+                    referrer_id=ref_code_record.user_id,
+                    referred_id=new_user.id,
+                    referral_code_id=ref_code_record.id,
+                    status="pending"
+                )
+                db.add(new_referral)
+                db.commit()
+                
+                # Optional: Notify referrer
+                try:
+                    from app.utils.notifications import create_notification
+                    await create_notification(
+                        db=db,
+                        user_id=ref_code_record.user_id,
+                        title="New Referral! 🎁",
+                        message=f"{user_data['name']} used your referral code to sign up. You'll earn a reward after their first successful booking!",
+                        notification_type="info",
+                        link="/referrals"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to process referral code {referral_code}: {e}")
+
     # Create access token
     access_token = create_access_token(
         data={"sub": str(new_user.id), "email": new_user.email}

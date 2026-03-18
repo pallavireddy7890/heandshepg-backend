@@ -31,6 +31,7 @@ class EmailVerification(Base):
     phone = Column(String(20), nullable=True)  # Phone number
     hashed_password = Column(String(255), nullable=False)
     role = Column(SQLEnum(AppRole), nullable=False, default=AppRole.customer)
+    referral_code = Column(String(20), nullable=True)  # Store referral code until verification
     
     # Verification status
     is_verified = Column(Boolean, default=False)

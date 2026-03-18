@@ -1,12 +1,10 @@
 """Referral program router."""
 from typing import List, Optional
 from uuid import UUID
-import secrets
-import string
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from pydantic import BaseModel
 from datetime import datetime
 
@@ -36,6 +34,7 @@ class ReferralCodeResponse(BaseModel):
 
 class ReferralResponse(BaseModel):
     id: UUID
+    referee_id: Optional[UUID] = None  # For frontend compatibility
     referred_name: Optional[str] = None
     referred_email: Optional[str] = None
     status: str
@@ -63,47 +62,22 @@ class ApplyReferralRequest(BaseModel):
 
 # ========== Endpoints ==========
 
+from app.services.referral_service import ReferralService
+
 @router.get("/code", response_model=ReferralCodeResponse)
 async def get_or_create_referral_code(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Get or create user's referral code."""
-    code = db.query(ReferralCode).filter(ReferralCode.user_id == current_user.id).first()
-    
-    if not code:
-        # Generate unique code
-        while True:
-            new_code = generate_referral_code()
-            existing = db.query(ReferralCode).filter(ReferralCode.code == new_code).first()
-            if not existing:
-                break
-        
-        code = ReferralCode(
-            user_id=current_user.id,
-            code=new_code
-        )
-        db.add(code)
-        db.commit()
-        db.refresh(code)
-    
-    # Get stats
-    referral_stats = db.query(
-        func.count(Referral.id).label("total"),
-        func.sum(Referral.reward_amount).label("rewards")
-    ).filter(Referral.referrer_id == current_user.id).first()
+    code = ReferralService.get_or_create_referral_code(db, current_user.id)
+    stats = ReferralService.get_referral_stats(db, current_user.id)
     
     response = ReferralCodeResponse.model_validate(code)
-    response.total_referrals = referral_stats.total or 0
-    response.total_rewards = float(referral_stats.rewards or 0)
+    response.total_referrals = stats["total_referrals"]
+    response.total_rewards = stats["total_rewards_earned"]
     
     return response
-
-
-def generate_referral_code(length: int = 8) -> str:
-    """Generate a random referral code."""
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(secrets.choice(chars) for _ in range(length))
 
 
 @router.get("/stats", response_model=ReferralStatsResponse)
@@ -112,24 +86,8 @@ async def get_referral_stats(
     db: Session = Depends(get_db),
 ):
     """Get referral statistics for current user."""
-    referrals = db.query(Referral).filter(Referral.referrer_id == current_user.id).all()
-    
-    total = len(referrals)
-    successful = len([r for r in referrals if r.status == "completed"])
-    pending = len([r for r in referrals if r.status == "pending"])
-    total_rewards = sum(r.reward_amount for r in referrals if r.status == "completed")
-    unclaimed = sum(r.reward_amount for r in referrals if r.status == "completed" and not r.reward_claimed)
-    
-    code = db.query(ReferralCode).filter(ReferralCode.user_id == current_user.id).first()
-    
-    return ReferralStatsResponse(
-        total_referrals=total,
-        successful_referrals=successful,
-        pending_referrals=pending,
-        total_rewards_earned=total_rewards,
-        unclaimed_rewards=unclaimed,
-        referral_code=code.code if code else None
-    )
+    stats = ReferralService.get_referral_stats(db, current_user.id)
+    return ReferralStatsResponse(**stats)
 
 
 @router.get("/list", response_model=List[ReferralResponse])
@@ -138,27 +96,7 @@ async def get_my_referrals(
     db: Session = Depends(get_db),
 ):
     """Get list of referrals made by current user."""
-    referrals = db.query(Referral).filter(
-        Referral.referrer_id == current_user.id
-    ).order_by(Referral.created_at.desc()).all()
-    
-    result = []
-    for ref in referrals:
-        referred_profile = db.query(Profile).filter(Profile.user_id == ref.referred_id).first()
-        referred_user = db.query(User).filter(User.id == ref.referred_id).first()
-        
-        result.append(ReferralResponse(
-            id=ref.id,
-            referred_name=referred_profile.name if referred_profile else None,
-            referred_email=referred_user.email if referred_user else None,
-            status=ref.status,
-            reward_amount=ref.reward_amount,
-            reward_claimed=ref.reward_claimed,
-            created_at=ref.created_at,
-            completed_at=ref.completed_at
-        ))
-    
-    return result
+    return ReferralService.get_user_referrals(db, current_user.id)
 
 
 @router.post("/apply")
@@ -227,11 +165,32 @@ async def claim_referral_rewards(
             detail="No unclaimed rewards available"
         )
     
+    from app.services.wallet_service import WalletService
+    from app.models import WalletTransaction, TransactionType, TransactionStatus
+    
+    # Get user wallet
+    wallet = WalletService.get_or_create_wallet(db, current_user.id)
+    
     total_claimed = 0
     for ref in unclaimed:
         ref.reward_claimed = True
         total_claimed += ref.reward_amount
     
+    # Add to wallet (convert INR to paise)
+    amount_paise = int(total_claimed * 100)
+    wallet.balance += amount_paise
+    
+    # Create a wallet transaction for the reward
+    transaction = WalletTransaction(
+        wallet_id=wallet.id,
+        payer_id=None, # System
+        receiver_id=current_user.id,
+        amount=amount_paise,
+        transaction_type=TransactionType.credit,
+        status=TransactionStatus.completed,
+        description=f"Referral reward claimed for {len(unclaimed)} successful referrals"
+    )
+    db.add(transaction)
     db.commit()
     
     return {

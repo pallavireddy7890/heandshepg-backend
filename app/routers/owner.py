@@ -5,7 +5,7 @@ from datetime import datetime, date
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text
+from sqlalchemy import func, text, String
 from pydantic import BaseModel
 
 from app.database import get_db
@@ -807,4 +807,71 @@ async def update_tenant_info(
         raise
     except Exception as e:
         db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+@router.get("/search", dependencies=[Depends(require_owner)])
+async def owner_global_search(
+    q: str = Query(..., min_length=1),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Global search for owner's properties, tenants, and bookings."""
+    try:
+        # 1. Search Properties
+        properties = db.query(Property).filter(
+            Property.owner_id == current_user.id,
+            (Property.title.ilike(f"%{q}%")) | 
+            (Property.locality.ilike(f"%{q}%")) | 
+            (Property.city.ilike(f"%{q}%")) |
+            (Property.address.ilike(f"%{q}%"))
+        ).limit(10).all()
+
+        # 2. Search Tenants (via bookings related to owner properties)
+        # Search by name or phone in Profile
+        tenants = db.query(Profile).join(
+            Booking, Booking.customer_id == Profile.user_id
+        ).filter(
+            Booking.owner_id == current_user.id,
+            (Profile.name.ilike(f"%{q}%")) | 
+            (Profile.phone.ilike(f"%{q}%")) |
+            (Profile.email.ilike(f"%{q}%"))
+        ).distinct().limit(10).all()
+
+        # 3. Search Bookings (by ID fragment)
+        bookings = db.query(Booking).filter(
+            Booking.owner_id == current_user.id,
+            Booking.id.cast(String).ilike(f"%{q}%")
+        ).limit(10).all()
+
+        # Format results
+        result = {
+            "properties": [
+                {
+                    "id": str(p.id),
+                    "title": p.title,
+                    "city": p.city,
+                    "locality": p.locality,
+                    "status": p.status
+                } for p in properties
+            ],
+            "tenants": [
+                {
+                    "id": str(t.user_id),
+                    "name": t.name,
+                    "phone": t.phone,
+                    "email": t.email,
+                } for t in tenants
+            ],
+            "bookings": [
+                {
+                    "id": str(b.id),
+                    "status": b.status.value if hasattr(b.status, 'value') else str(b.status),
+                    "property_id": str(b.property_id),
+                    "customer_id": str(b.customer_id),
+                } for b in bookings
+            ]
+        }
+
+        return result
+    except Exception as e:
+        print(f"Error in owner search: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -95,7 +95,7 @@ class WalletService:
         wallet = WalletService.get_or_create_wallet(db, user_id)
         
         # Calculate breakdowns from transactions
-        # Online completed
+        # Online/Internal completed (available for platform payments)
         online_completed = db.query(func.sum(WalletTransaction.amount)).filter(
             WalletTransaction.wallet_id == wallet.id,
             WalletTransaction.payment_method == 'online',
@@ -103,7 +103,7 @@ class WalletService:
             WalletTransaction.transaction_type == TransactionType.credit
         ).scalar() or 0
         
-        # Offline completed
+        # Offline completed (cash/manual by owner, NOT available for platform payments)
         offline_completed = db.query(func.sum(WalletTransaction.amount)).filter(
             WalletTransaction.wallet_id == wallet.id,
             WalletTransaction.payment_method != 'online',
@@ -111,7 +111,7 @@ class WalletService:
             WalletTransaction.transaction_type == TransactionType.credit
         ).scalar() or 0
         
-        # Online pending
+        # Pending transactions
         online_pending = db.query(func.sum(WalletTransaction.amount)).filter(
             WalletTransaction.wallet_id == wallet.id,
             WalletTransaction.payment_method == 'online',
@@ -119,7 +119,6 @@ class WalletService:
             WalletTransaction.transaction_type == TransactionType.credit
         ).scalar() or 0
         
-        # Offline pending
         offline_pending = db.query(func.sum(WalletTransaction.amount)).filter(
             WalletTransaction.wallet_id == wallet.id,
             WalletTransaction.payment_method != 'online',
@@ -127,24 +126,27 @@ class WalletService:
             WalletTransaction.transaction_type == TransactionType.credit
         ).scalar() or 0
 
-        # Calculate withdrawals (completed)
+        # Calculate withdrawals
         withdrawals_completed = db.query(func.sum(WalletTransaction.amount)).filter(
             WalletTransaction.wallet_id == wallet.id,
             WalletTransaction.transaction_type == TransactionType.withdrawal,
             WalletTransaction.status == TransactionStatus.completed
         ).scalar() or 0
         
-        # Calculate withdrawals (pending)
         withdrawals_pending = db.query(func.sum(WalletTransaction.amount)).filter(
             WalletTransaction.wallet_id == wallet.id,
             WalletTransaction.transaction_type == TransactionType.withdrawal,
             WalletTransaction.status == TransactionStatus.pending
         ).scalar() or 0
 
+        # Total successful credits that can be used for bookings (balance - used_for_withdrawals)
+        # We use online_completed because offline payments (cash) don't give the platform money to pay owners
+        available = max(0, online_completed - withdrawals_completed - withdrawals_pending)
+
         return {
             "balance": wallet.balance,
             "pending_balance": wallet.pending_balance,
-            "available_balance": online_completed - withdrawals_completed - withdrawals_pending,
+            "available_balance": available,
             "online_balance": online_completed - withdrawals_completed,
             "offline_balance": offline_completed,
             "pending_online": online_pending,

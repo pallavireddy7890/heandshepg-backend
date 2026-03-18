@@ -41,6 +41,7 @@ class InitiatePaymentRequest(BaseModel):
     booking_id: str
     amount: float  # Amount in INR
     payment_type: Optional[str] = "total"  # total, rent, deposit
+    use_wallet_balance: Optional[bool] = False
 
 
 class InitiatePaymentResponse(BaseModel):
@@ -141,6 +142,7 @@ async def get_my_pending_payments(
                     property_title = prop.title
         
         result.append({
+            "id": str(txn.id),
             "transaction_id": str(txn.id),
             "amount": txn.amount / 100,  # In INR
             "owner_name": owner_profile.name if owner_profile else "Property Owner",
@@ -185,6 +187,7 @@ async def get_owner_pending_payments(
                     property_title = prop.title
         
         result.append({
+            "id": str(txn.id),
             "transaction_id": str(txn.id),
             "amount": txn.amount / 100,  # In INR
             "customer_name": payer_profile.name if payer_profile else "Customer",
@@ -240,49 +243,86 @@ async def initiate_wallet_payment(
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
     
     # Amount in paise
-    amount_paise = int(request.amount * 100)
+    requested_amount_paise = int(request.amount * 100)
     
-    try:
-        import razorpay
+    # Handle wallet balance deduction
+    wallet_contribution_paise = 0
+    if request.use_wallet_balance:
+        user_wallet = WalletService.get_or_create_wallet(db, current_user.id)
+        balance_info = WalletService.get_balance(db, current_user.id)
+        available_paise = int(balance_info["available_balance"])
         
-        # Initialize Razorpay client
-        client = razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
-        
-        # Create order
-        order_data = {
-            "amount": amount_paise,
-            "currency": "INR",
-            "receipt": f"wb_{str(request.booking_id)[-24:]}",  # Max 40 chars for Razorpay
-            "notes": {
-                "booking_id": request.booking_id,
-                "customer_id": str(current_user.id),
-                "owner_id": str(booking.owner_id),
+        if available_paise > 0:
+            wallet_contribution_paise = min(available_paise, requested_amount_paise)
+            
+            # Create a debit transaction for the user
+            user_debit = WalletTransaction(
+                wallet_id=user_wallet.id,
+                payer_id=current_user.id,
+                receiver_id=booking.owner_id,
+                booking_id=UUID(request.booking_id),
+                amount=wallet_contribution_paise,
+                transaction_type=TransactionType.debit,
+                status=TransactionStatus.completed,
+                description=f"Used referral/wallet balance for {request.payment_type} - booking {request.booking_id}"
+            )
+            db.add(user_debit)
+            
+            # Deduct from user's balance
+            user_wallet.balance -= wallet_contribution_paise
+            db.flush() # Ensure debit is recorded before credit
+    
+    remaining_amount_paise = requested_amount_paise - wallet_contribution_paise
+    
+    razorpay_order_id = None
+    if remaining_amount_paise > 0:
+        try:
+            import razorpay
+            
+            # Initialize Razorpay client
+            client = razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+            
+            # Create order
+            order_data = {
+                "amount": remaining_amount_paise,
+                "currency": "INR",
+                "receipt": f"wb_{str(request.booking_id)[-24:]}",
+                "notes": {
+                    "booking_id": request.booking_id,
+                    "customer_id": str(current_user.id),
+                    "owner_id": str(booking.owner_id),
+                    "wallet_contribution": str(wallet_contribution_paise)
+                }
             }
-        }
-        
-        razorpay_order = client.order.create(data=order_data)
-        razorpay_order_id = razorpay_order["id"]
-        
-    except ImportError:
-        # Mock order for development
-        razorpay_order_id = f"order_mock_{datetime.now().timestamp()}"
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create Razorpay order: {str(e)}"
-        )
+            
+            razorpay_order = client.order.create(data=order_data)
+            razorpay_order_id = razorpay_order["id"]
+            
+        except ImportError:
+            # Mock order for development
+            razorpay_order_id = f"order_mock_{datetime.now().timestamp()}"
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create Razorpay order: {str(e)}"
+            )
     
-    # Create wallet transaction
+    # Create wallet transaction for the owner (credit)
+    # This represents the FULL amount the owner expects
+    description = f"Payment for {request.payment_type} - booking {request.booking_id}"
+    if wallet_contribution_paise > 0:
+        description += f" (Wallet: ₹{wallet_contribution_paise/100:.2f}, Online: ₹{remaining_amount_paise/100:.2f})"
+        
     transaction = WalletService.create_transaction(
         db=db,
         wallet_id=owner_wallet.id,
         booking_id=UUID(request.booking_id),
         payer_id=current_user.id,
         receiver_id=booking.owner_id,
-        amount=amount_paise,
+        amount=requested_amount_paise, # Full amount credited to owner's pending balance
         transaction_type=TransactionType.credit,
         razorpay_order_id=razorpay_order_id,
-        description=f"Payment for {request.payment_type} - booking {request.booking_id}",
+        description=description,
     )
     
     # Store payment type if column exists
@@ -290,13 +330,17 @@ async def initiate_wallet_payment(
         transaction.payment_type = request.payment_type
         db.commit()
     
+    # If fully paid via wallet, we still want OTP verification (or maybe not?)
+    # Usually, even wallet payments should be verified or at least recorded.
+    # The current system requires OTP for all "credits" to owner wallets.
+    
     return InitiatePaymentResponse(
         transaction_id=str(transaction.id),
-        razorpay_order_id=razorpay_order_id,
-        amount=amount_paise,
+        razorpay_order_id=razorpay_order_id or "paid_via_wallet",
+        amount=remaining_amount_paise,
         currency="INR",
         key_id=settings.razorpay_key_id or "rzp_test_mock",
-        message="Payment initiated. Complete payment via Razorpay."
+        message="Payment initiated. " + ("Complete via Razorpay." if remaining_amount_paise > 0 else "Verify with owner via OTP.")
     )
 
 
@@ -594,12 +638,11 @@ async def reject_offline_transaction(
     # Get transaction
     transaction = db.query(WalletTransaction).filter(
         WalletTransaction.id == transaction_id,
-        WalletTransaction.payment_method == 'offline',
         WalletTransaction.status != TransactionStatus.completed
     ).first()
     
     if not transaction:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending offline transaction not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending transaction not found")
     
     # Verify current user is the owner (receiver) or admin
     user_role = get_user_role(current_user, db)

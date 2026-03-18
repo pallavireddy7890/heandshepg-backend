@@ -26,6 +26,7 @@ class UserSignUp(BaseModel):
     name: str = Field(..., min_length=2)
     phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$", description="Phone number (10 digits) or with country code (+...)")
     role: AppRoleEnum = AppRoleEnum.customer
+    referral_code: Optional[str] = None
 
 
 class UserLogin(BaseModel):

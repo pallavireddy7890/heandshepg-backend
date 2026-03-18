@@ -45,5 +45,11 @@ class BookingService:
         if booking.room_id:
             sync_room_vacancy(db, booking.room_id)
             
+        # 5. Handle Referral Completion
+        # If the booking is now "paid", and it's the customer's first booking, complete any pending referral
+        if booking.status == "paid":
+            from app.services.referral_service import ReferralService
+            ReferralService.complete_referral_for_booking(db, booking.customer_id, booking.id)
+            
         db.commit()
         return True, "Booking updated successfully"

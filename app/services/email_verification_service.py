@@ -48,7 +48,8 @@ class EmailVerificationService:
         name: str,
         password: str,
         role: str = "customer",
-        phone: str = None
+        phone: Optional[str] = None,
+        referral_code: Optional[str] = None
     ) -> Tuple[Optional[EmailVerification], Optional[str]]:
         """
         Create a new email verification record and send OTP.
@@ -81,6 +82,7 @@ class EmailVerificationService:
             existing.attempts = 0
             existing.name = name
             existing.phone = phone
+            existing.referral_code = referral_code
             existing.hashed_password = get_password_hash(password)
             db.commit()
             db.refresh(existing)
@@ -117,6 +119,7 @@ class EmailVerificationService:
             phone=phone,
             hashed_password=hashed_password,
             role=role_enum,
+            referral_code=referral_code,
             expires_at=EmailVerification.get_expiry_time()
         )
         db.add(verification)
@@ -361,7 +364,8 @@ If you didn't request this verification, please ignore this email.
             "name": verification.name,
             "phone": verification.phone,
             "hashed_password": verification.hashed_password,
-            "role": verification.role
+            "role": verification.role,
+            "referral_code": verification.referral_code
         }
 
 
