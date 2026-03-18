@@ -6,11 +6,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, String
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Profile, UserRole, OwnersProfile, AuditLog, SystemSettings, AppRole, KycStatus, WalletTransaction, TransactionType, TransactionStatus
+from app.models import User, Profile, UserRole, OwnersProfile, AuditLog, SystemSettings, AppRole, KycStatus, WalletTransaction, TransactionType, TransactionStatus, Property, Booking
 from app.utils.security import get_current_user, require_role
 
 require_admin = require_role("admin")
@@ -1438,3 +1438,64 @@ async def delete_city(
     db.commit()
     
     return {"message": f"City '{city_name}' deleted successfully"}
+@router.get("/search", dependencies=[Depends(require_admin)])
+async def admin_global_search(
+    q: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+):
+    """Global search for administrators."""
+    try:
+        # 1. Search Properties
+        properties = db.query(Property).filter(
+            (Property.title.ilike(f"%{q}%")) | 
+            (Property.locality.ilike(f"%{q}%")) | 
+            (Property.city.ilike(f"%{q}%")) |
+            (Property.address.ilike(f"%{q}%"))
+        ).limit(10).all()
+
+        # 2. Search Users
+        users = db.query(Profile).join(User, User.id == Profile.user_id).filter(
+            (Profile.name.ilike(f"%{q}%")) | 
+            (Profile.phone.ilike(f"%{q}%")) |
+            (User.email.ilike(f"%{q}%"))
+        ).limit(10).all()
+
+        # 3. Search Bookings (by ID fragment)
+        from app.models import Booking
+        bookings = db.query(Booking).filter(
+            Booking.id.cast(String).ilike(f"%{q}%")
+        ).limit(10).all()
+
+        # Format results
+        result = {
+            "properties": [
+                {
+                    "id": str(p.id),
+                    "title": p.title,
+                    "city": p.city,
+                    "locality": p.locality,
+                    "status": p.status
+                } for p in properties
+            ],
+            "users": [
+                {
+                    "id": str(u.user_id),
+                    "name": u.name,
+                    "phone": u.phone,
+                    "email": u.email,
+                } for u in users
+            ],
+            "bookings": [
+                {
+                    "id": str(b.id),
+                    "status": b.status.value if hasattr(b.status, 'value') else str(b.status),
+                    "property_id": str(b.property_id),
+                    "customer_id": str(b.customer_id),
+                } for b in bookings
+            ]
+        }
+
+        return result
+    except Exception as e:
+        print(f"Error in admin search: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
