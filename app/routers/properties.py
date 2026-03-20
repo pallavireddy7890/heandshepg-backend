@@ -71,6 +71,23 @@ async def list_properties(
     return properties
 
 
+@router.get("/search", response_model=List[PropertyListResponse])
+async def search_properties(
+    q: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    limit: int = 10
+):
+    """Global search for properties (customer-facing)."""
+    from sqlalchemy.orm import joinedload
+    query = db.query(Property).options(joinedload(Property.rooms)).filter(
+        (Property.status == "active"),
+        (Property.title.ilike(f"%{q}%") | 
+         Property.city.ilike(f"%{q}%") | 
+         Property.locality.ilike(f"%{q}%"))
+    )
+    return query.limit(limit).all()
+
+
 @router.get("/{property_id}", response_model=PropertyDetailResponse)
 async def get_property(
     property_id: UUID,
