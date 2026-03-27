@@ -1,21 +1,23 @@
-"""Roommate matching router."""
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, desc
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Profile, RoommateProfile, RoommateMatch
+from app.models import User, Profile, RoommateProfile, RoommateMatch, RoommateMessage
 from app.utils.security import get_current_user
 
 router = APIRouter(prefix="/roommates", tags=["Roommate Matching"])
 
 
-# ========== Pydantic Schemas ==========
+class ConnectionRequestPayload(BaseModel):
+    senderId: UUID
+    receiverId: UUID
+    status: str = "pending"
 
 class RoommateProfileCreate(BaseModel):
     age: Optional[int] = None
@@ -69,7 +71,7 @@ class RoommateProfileResponse(BaseModel):
 
 
 class RoommateMatchResponse(BaseModel):
-    id: UUID
+    id: UUID  # Profile ID
     matched_user_id: UUID
     match_score: Optional[float]
     status: str
@@ -79,9 +81,49 @@ class RoommateMatchResponse(BaseModel):
     occupation: Optional[str] = None
     bio: Optional[str] = None
     preferences: Optional[List[str]] = None
+    match_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
+
+
+class ConnectionRespond(BaseModel):
+    status: str  # accepted or rejected
+
+
+class RoommateMessageCreate(BaseModel):
+    content: str
+    reply_to: Optional[dict] = None
+
+
+class UserSummary(BaseModel):
+    id: UUID
+    name: str
+    profile_photo: Optional[str] = None
+
+class RoommateMessageResponse(BaseModel):
+    id: UUID
+    sender_id: UUID
+    receiver_id: UUID
+    content: str
+    created_at: datetime
+    read: bool
+    reply_to: Optional[dict] = None
+    is_deleted: bool = False
+    sender_info: Optional[UserSummary] = None
+    receiver_info: Optional[UserSummary] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ChatListResponse(BaseModel):
+    user_id: UUID
+    user_name: Optional[str]
+    user_photo: Optional[str]
+    last_message: Optional[str]
+    last_message_at: Optional[datetime]
+    unread_count: int
 
 
 # ========== Endpoints ==========
@@ -173,21 +215,32 @@ async def get_roommate_matches(
         RoommateProfile.is_active == True
     )
     
-    # Note: City filter removed to show all potential matches
-    # Same-city matches will get higher scores in calculate_match_score
-    
-    # Filter by budget overlap (optional - don't exclude if budget not set)
-    # Commenting out strict budget filter to show more results
-    # if my_profile.budget_max:
-    #     query = query.filter(
-    #         or_(
-    #             RoommateProfile.budget_min == None,
-    #             RoommateProfile.budget_min <= my_profile.budget_max
-    #         )
-    #     )
-    
     potential_matches = query.limit(20).all()
     
+    # Pre-fetch existing connection requests
+    existing_matches = db.query(RoommateMatch).filter(
+        or_(
+            RoommateMatch.user_id == current_user.id,
+            RoommateMatch.matched_user_id == current_user.id
+        )
+    ).all()
+    
+    match_map = {} # {other_user_id: (status, match_id)}
+    for m in existing_matches:
+        if m.status == "accepted":
+            other_id = m.matched_user_id if m.user_id == current_user.id else m.user_id
+            match_map[other_id] = ("accepted", m.id)
+        elif m.status == "pending":
+            if m.user_id == current_user.id:
+                match_map[m.matched_user_id] = ("pending", m.id)
+            else:
+                match_map[m.user_id] = ("incoming", m.id)
+        elif m.status == "cancelled":
+            continue # Ignore cancelled requests
+        else:
+            other_id = m.matched_user_id if m.user_id == current_user.id else m.user_id
+            match_map[other_id] = (m.status, m.id)
+
     result = []
     for match_profile in potential_matches:
         # Calculate match score
@@ -195,17 +248,22 @@ async def get_roommate_matches(
         
         user_profile = db.query(Profile).filter(Profile.user_id == match_profile.user_id).first()
         
+        # Determine status
+        match_info = match_map.get(match_profile.user_id, ("suggested", None))
+        match_status, match_id = match_info
+        
         result.append(RoommateMatchResponse(
             id=match_profile.id,
             matched_user_id=match_profile.user_id,
             match_score=score,
-            status="suggested",
+            status=match_status,
             user_name=user_profile.name if user_profile else None,
             user_photo=user_profile.profile_photo if user_profile else None,
             age=match_profile.age,
             occupation=match_profile.occupation,
             bio=match_profile.bio,
             preferences=match_profile.preferences,
+            match_id=match_id,
         ))
     
     # Sort by match score
@@ -255,14 +313,19 @@ async def connect_with_roommate(
     if not target_profile:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
     
-    # Check if already connected
+    if target_profile.user_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot connect with yourself")
+    
+    # Check if already connected (in either direction)
     existing = db.query(RoommateMatch).filter(
-        RoommateMatch.user_id == current_user.id,
-        RoommateMatch.matched_user_id == target_profile.user_id
+        or_(
+            and_(RoommateMatch.user_id == current_user.id, RoommateMatch.matched_user_id == target_profile.user_id),
+            and_(RoommateMatch.user_id == target_profile.user_id, RoommateMatch.matched_user_id == current_user.id)
+        )
     ).first()
     
     if existing:
-        return {"message": "Already connected", "status": existing.status}
+        return {"message": "Already connected", "status": existing.status, "match_id": str(existing.id)}
     
     # Create match request
     my_profile = db.query(RoommateProfile).filter(RoommateProfile.user_id == current_user.id).first()
@@ -277,4 +340,315 @@ async def connect_with_roommate(
     db.add(match)
     db.commit()
     
-    return {"message": "Connection request sent", "match_id": str(match.id)}
+    return {"message": "Connection request sent", "match_id": str(match.id), "status": "pending"}
+
+
+@router.post("/requests")
+async def send_connection_request(
+    payload: ConnectionRequestPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Alias for connecting with a roommate using a JSON payload."""
+    target_user_id = payload.receiverId
+    # Security: Use current_user.id as sender regardless of payload.senderId
+    # (unless admin, but let's stick to current user for now)
+    sender_id = current_user.id
+    
+    # Check if already connected (in either direction)
+    existing = db.query(RoommateMatch).filter(
+        or_(
+            and_(RoommateMatch.user_id == sender_id, RoommateMatch.matched_user_id == target_user_id),
+            and_(RoommateMatch.user_id == target_user_id, RoommateMatch.matched_user_id == sender_id)
+        ),
+        RoommateMatch.status != "cancelled"
+    ).first()
+    
+    if existing:
+        if existing.status == "cancelled":
+            existing.status = "pending"
+            existing.user_id = sender_id
+            existing.matched_user_id = target_user_id
+            db.commit()
+            return existing
+        return existing
+    
+    # Create match request
+    match = RoommateMatch(
+        user_id=sender_id,
+        matched_user_id=target_user_id,
+        match_score=50.0,
+        status="pending"
+    )
+    db.add(match)
+    db.commit()
+    db.refresh(match)
+    return match
+
+
+@router.delete("/requests/{match_id}")
+async def delete_connection_request(
+    match_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete or cancel a connection request."""
+    match = db.query(RoommateMatch).filter(RoommateMatch.id == match_id).first()
+    
+    if not match:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+        
+    # Only allow the sender to cancel 'pending'
+    if match.status == "pending" and match.user_id == current_user.id:
+        db.delete(match) # Actually delete as requested
+        db.commit()
+        return {"message": "Request deleted"}
+    
+    # Generic delete if authorized (e.g. either party can delete an accepted/rejected match to disconnect)
+    if match.user_id == current_user.id or match.matched_user_id == current_user.id:
+        db.delete(match)
+        db.commit()
+        return {"message": "Match deleted"}
+        
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+
+@router.get("/requests")
+async def get_connection_requests(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List incoming connection requests."""
+    requests = db.query(RoommateMatch).filter(
+        RoommateMatch.matched_user_id == current_user.id,
+        RoommateMatch.user_id != current_user.id,
+        RoommateMatch.status == "pending"
+    ).all()
+    
+    result = []
+    for req in requests:
+        sender_profile = db.query(Profile).filter(Profile.user_id == req.user_id).first()
+        result.append({
+            "id": req.id,
+            "sender_id": req.user_id,
+            "sender_name": sender_profile.name if sender_profile else "Unknown",
+            "sender_photo": sender_profile.profile_photo if sender_profile else None,
+            "created_at": req.created_at,
+            "status": req.status
+        })
+    return result
+
+
+@router.post("/requests/{match_id}/respond")
+async def respond_to_request(
+    match_id: UUID,
+    response: ConnectionRespond,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Accept or reject a connection request."""
+    match = db.query(RoommateMatch).filter(
+        RoommateMatch.id == match_id,
+        RoommateMatch.matched_user_id == current_user.id
+    ).first()
+    
+    if not match:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    
+    if response.status not in ["accepted", "rejected"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
+    
+    match.status = response.status
+    db.commit()
+    
+    return {"message": f"Connection {response.status}", "status": response.status}
+
+
+@router.get("/chats", response_model=List[ChatListResponse])
+async def get_chat_list(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all users with whom current user has an accepted match."""
+    matches = db.query(RoommateMatch).filter(
+        and_(
+            or_(RoommateMatch.user_id == current_user.id, RoommateMatch.matched_user_id == current_user.id),
+            RoommateMatch.status == "accepted"
+        )
+    ).all()
+    
+    result = []
+    for match in matches:
+        other_user_id = match.matched_user_id if match.user_id == current_user.id else match.user_id
+        other_profile = db.query(Profile).filter(Profile.user_id == other_user_id).first()
+        
+        # Get last message
+        last_msg = db.query(RoommateMessage).filter(
+            or_(
+                and_(RoommateMessage.sender_id == current_user.id, RoommateMessage.receiver_id == other_user_id),
+                and_(RoommateMessage.sender_id == other_user_id, RoommateMessage.receiver_id == current_user.id)
+            )
+        ).order_by(desc(RoommateMessage.created_at)).first()
+        
+        # unread count
+        unread_count = db.query(RoommateMessage).filter(
+            RoommateMessage.sender_id == other_user_id,
+            RoommateMessage.receiver_id == current_user.id,
+            RoommateMessage.read == False
+        ).count()
+        
+        result.append(ChatListResponse(
+            user_id=other_user_id,
+            user_name=other_profile.name if other_profile else "Unknown",
+            user_photo=other_profile.profile_photo if other_profile else None,
+            last_message=last_msg.content if last_msg else None,
+            last_message_at=last_msg.created_at if last_msg else None,
+            unread_count=unread_count
+        ))
+        
+    # Sort by last message time
+    result.sort(key=lambda x: x.last_message_at or datetime.min, reverse=True)
+    return result
+
+
+@router.get("/unread-count")
+async def get_total_unread_count(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get the total number of unread messages for the current user."""
+    count = db.query(RoommateMessage).filter(
+        RoommateMessage.receiver_id == current_user.id,
+        RoommateMessage.read == False
+    ).count()
+    return {"unread_count": count}
+
+
+@router.get("/chats/{user_id}/messages", response_model=List[RoommateMessageResponse])
+async def get_messages(
+    user_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get message history between two users."""
+    # Check if they are connected
+    match = db.query(RoommateMatch).filter(
+        and_(
+            or_(
+                and_(RoommateMatch.user_id == current_user.id, RoommateMatch.matched_user_id == user_id),
+                and_(RoommateMatch.user_id == user_id, RoommateMatch.matched_user_id == current_user.id)
+            ),
+            RoommateMatch.status == "accepted"
+        )
+    ).first()
+    
+    if not match:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not connected with this user")
+    
+    messages = db.query(RoommateMessage).filter(
+        or_(
+            and_(RoommateMessage.sender_id == current_user.id, RoommateMessage.receiver_id == user_id),
+            and_(RoommateMessage.sender_id == user_id, RoommateMessage.receiver_id == current_user.id)
+        )
+    ).order_by(RoommateMessage.created_at).all()
+    
+    # Mark messages as read
+    db.query(RoommateMessage).filter(
+        RoommateMessage.sender_id == user_id,
+        RoommateMessage.receiver_id == current_user.id,
+        RoommateMessage.read == False
+    ).update({"read": True})
+    db.commit()
+    
+    # Enrich with sender/receiver info
+    user_cache = {}
+    
+    def get_user_summary(uid):
+        if uid not in user_cache:
+            p = db.query(Profile).filter(Profile.user_id == uid).first()
+            user_cache[uid] = UserSummary(
+                id=uid,
+                name=p.name if p else "Unknown",
+                profile_photo=p.profile_photo if p else None
+            )
+        return user_cache[uid]
+
+    result = []
+    for m in messages:
+        resp = RoommateMessageResponse.model_validate(m)
+        resp.sender_info = get_user_summary(m.sender_id)
+        resp.receiver_info = get_user_summary(m.receiver_id)
+        result.append(resp)
+        
+    return result
+
+
+@router.post("/chats/{user_id}/messages", response_model=RoommateMessageResponse)
+async def send_message(
+    user_id: UUID,
+    message_data: RoommateMessageCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Send a new message to a connected user."""
+    # Check if they are connected
+    match = db.query(RoommateMatch).filter(
+        and_(
+            or_(
+                and_(RoommateMatch.user_id == current_user.id, RoommateMatch.matched_user_id == user_id),
+                and_(RoommateMatch.user_id == user_id, RoommateMatch.matched_user_id == current_user.id)
+            ),
+            RoommateMatch.status == "accepted"
+        )
+    ).first()
+    
+    if not match:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not connected with this user")
+    
+    new_message = RoommateMessage(
+        sender_id=current_user.id,
+        receiver_id=user_id,
+        content=message_data.content,
+        reply_to=message_data.reply_to
+    )
+    db.add(new_message)
+    db.commit()
+    db.refresh(new_message)
+    
+    # Enrich Response
+    sender_p = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    receiver_p = db.query(Profile).filter(Profile.user_id == user_id).first()
+    
+    resp = RoommateMessageResponse.model_validate(new_message)
+    resp.sender_info = UserSummary(id=current_user.id, name=sender_p.name if sender_p else "Me", profile_photo=sender_p.profile_photo if sender_p else None)
+    resp.receiver_info = UserSummary(id=user_id, name=receiver_p.name if receiver_p else "User", profile_photo=receiver_p.profile_photo if receiver_p else None)
+    
+    return resp
+
+
+@router.delete("/chats/{user_id}/messages/{message_id}")
+async def delete_message(
+    user_id: UUID,
+    message_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a message (sender only)."""
+    message = db.query(RoommateMessage).filter(
+        RoommateMessage.id == message_id,
+        or_(RoommateMessage.sender_id == current_user.id, RoommateMessage.receiver_id == current_user.id)
+    ).first()
+
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the sender can delete their message")
+
+    # WhatsApp-style: we don't actually REMOVE the row, just flag it and clear content
+    message.is_deleted = True
+    message.content = "This message was deleted"
+    db.commit()
+    
+    return {"status": "success", "message": "Message deleted"}
+

@@ -1,5 +1,5 @@
 """SQLAlchemy models for roommate matching and referrals."""
-from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Boolean, Integer, Float, Enum
+from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Boolean, Integer, Float, Enum, JSON
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -101,3 +101,21 @@ class Referral(Base):
     # Relationships
     referrer = relationship("User", foreign_keys=[referrer_id])
     referred = relationship("User", foreign_keys=[referred_id])
+
+
+class RoommateMessage(Base):
+    __tablename__ = "roommate_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    receiver_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    read = Column(Boolean, default=False)
+    reply_to = Column(JSON, nullable=True)
+    is_deleted = Column(Boolean, default=False)
+
+    # Relationships
+    sender = relationship("User", foreign_keys=[sender_id])
+    receiver = relationship("User", foreign_keys=[receiver_id])
+
