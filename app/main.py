@@ -267,6 +267,14 @@ async def lifespan(app: FastAPI):
                 # === MAINTENANCE_TICKETS ===
                 "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS room_id UUID REFERENCES rooms(id) ON DELETE SET NULL",
                 "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL",
+                # === BLOCKED_USERS ===
+                # Table is created by Base.metadata.create_all, but ensure unique constraint exists
+                """DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_blocker_blocked') THEN
+                        ALTER TABLE blocked_users ADD CONSTRAINT uq_blocker_blocked UNIQUE (blocker_id, blocked_id);
+                    END IF;
+                EXCEPTION WHEN undefined_table THEN NULL;
+                END $$""",
             ]
             for sql in sync_statements:
                 try:

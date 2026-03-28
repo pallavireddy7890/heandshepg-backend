@@ -8,7 +8,7 @@ from sqlalchemy import and_, or_, desc
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Profile, RoommateProfile, RoommateMatch, RoommateMessage
+from app.models import User, Profile, RoommateProfile, RoommateMatch, RoommateMessage, BlockedUser
 from app.utils.security import get_current_user
 
 router = APIRouter(prefix="/roommates", tags=["Roommate Matching"])
@@ -96,6 +96,16 @@ class RoommateMessageCreate(BaseModel):
     reply_to: Optional[dict] = None
 
 
+class BlockUserPayload(BaseModel):
+    blockedUserId: UUID
+
+
+class BlockStatusResponse(BaseModel):
+    is_blocked: bool = False
+    blocked_by_me: bool = False
+    blocked_by_them: bool = False
+
+
 class UserSummary(BaseModel):
     id: UUID
     name: str
@@ -124,6 +134,30 @@ class ChatListResponse(BaseModel):
     last_message: Optional[str]
     last_message_at: Optional[datetime]
     unread_count: int
+    is_blocked: bool = False
+    blocked_by_me: bool = False
+    blocked_by_them: bool = False
+
+
+# ========== Helpers ==========
+
+def check_block_status(db: Session, user_a_id: UUID, user_b_id: UUID) -> dict:
+    """Check block status between two users. Returns dict with is_blocked, blocked_by_me, blocked_by_them."""
+    blocked_by_me = db.query(BlockedUser).filter(
+        BlockedUser.blocker_id == user_a_id,
+        BlockedUser.blocked_id == user_b_id
+    ).first() is not None
+
+    blocked_by_them = db.query(BlockedUser).filter(
+        BlockedUser.blocker_id == user_b_id,
+        BlockedUser.blocked_id == user_a_id
+    ).first() is not None
+
+    return {
+        "is_blocked": blocked_by_me or blocked_by_them,
+        "blocked_by_me": blocked_by_me,
+        "blocked_by_them": blocked_by_them,
+    }
 
 
 # ========== Endpoints ==========
@@ -497,13 +531,19 @@ async def get_chat_list(
             RoommateMessage.read == False
         ).count()
         
+        # Check block status
+        block_info = check_block_status(db, current_user.id, other_user_id)
+
         result.append(ChatListResponse(
             user_id=other_user_id,
             user_name=other_profile.name if other_profile else "Unknown",
             user_photo=other_profile.profile_photo if other_profile else None,
             last_message=last_msg.content if last_msg else None,
             last_message_at=last_msg.created_at if last_msg else None,
-            unread_count=unread_count
+            unread_count=unread_count,
+            is_blocked=block_info["is_blocked"],
+            blocked_by_me=block_info["blocked_by_me"],
+            blocked_by_them=block_info["blocked_by_them"],
         ))
         
     # Sort by last message time
@@ -591,6 +631,20 @@ async def send_message(
     db: Session = Depends(get_db),
 ):
     """Send a new message to a connected user."""
+    # ===== BLOCK CHECK (security validation) =====
+    block_info = check_block_status(db, current_user.id, user_id)
+    if block_info["is_blocked"]:
+        if block_info["blocked_by_me"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You have blocked this user. Unblock to send messages."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot send messages to this user."
+            )
+
     # Check if they are connected
     match = db.query(RoommateMatch).filter(
         and_(
@@ -652,3 +706,94 @@ async def delete_message(
     
     return {"status": "success", "message": "Message deleted"}
 
+
+# ========== Block User Endpoints ==========
+
+@router.post("/block-user", response_model=BlockStatusResponse)
+async def block_user(
+    payload: BlockUserPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Block a user. Prevents both users from sending messages to each other."""
+    blocked_user_id = payload.blockedUserId
+
+    if blocked_user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot block yourself"
+        )
+
+    # Check if target user exists
+    target_user = db.query(User).filter(User.id == blocked_user_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Check if already blocked
+    existing = db.query(BlockedUser).filter(
+        BlockedUser.blocker_id == current_user.id,
+        BlockedUser.blocked_id == blocked_user_id
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User is already blocked"
+        )
+
+    # Create block record
+    block = BlockedUser(
+        blocker_id=current_user.id,
+        blocked_id=blocked_user_id
+    )
+    db.add(block)
+    db.commit()
+
+    return BlockStatusResponse(
+        is_blocked=True,
+        blocked_by_me=True,
+        blocked_by_them=False
+    )
+
+
+@router.delete("/block-user/{blocked_user_id}")
+async def unblock_user(
+    blocked_user_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Unblock a user."""
+    block = db.query(BlockedUser).filter(
+        BlockedUser.blocker_id == current_user.id,
+        BlockedUser.blocked_id == blocked_user_id
+    ).first()
+
+    if not block:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Block record not found. User is not blocked by you."
+        )
+
+    db.delete(block)
+    db.commit()
+
+    # Return updated block status (the other user may still have blocked current user)
+    updated_status = check_block_status(db, current_user.id, blocked_user_id)
+    return {
+        "message": "User unblocked successfully",
+        **updated_status
+    }
+
+
+@router.get("/block-status/{user_id}", response_model=BlockStatusResponse)
+async def get_block_status(
+    user_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Check block status between current user and target user."""
+    status_info = check_block_status(db, current_user.id, user_id)
+    return BlockStatusResponse(**status_info)
