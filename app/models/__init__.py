@@ -13,6 +13,7 @@ from app.models.wallet import Wallet, WalletTransaction, TransactionOTP, Transac
 from app.models.email_verification import EmailVerification
 from app.models.announcement import Announcement, AnnouncementPriority
 from app.models.maintenance import Ticket, TicketPriority, TicketStatus
+from app.models.vacation import Vacation, VacationStatus
 
 
 __all__ = [
@@ -74,6 +75,9 @@ __all__ = [
     "TicketStatus",
     # Blocked users
     "BlockedUser",
+    # Vacation models
+    "Vacation",
+    "VacationStatus",
 ]
 
 

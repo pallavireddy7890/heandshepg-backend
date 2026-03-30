@@ -44,3 +44,4 @@ htmlcov/
 # Uploads - user uploaded files should not be in version control
 Python/uploads/
 uploads/
+logs/sms_debug.log

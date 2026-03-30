@@ -12,6 +12,7 @@ from app.routers.roommates import router as roommates_router
 from app.routers.referrals import router as referrals_router
 from app.routers.wallet import router as wallet_router
 from app.routers.maintenance import router as maintenance_router
+from app.routers.vacations import router as vacations_router
 
 __all__ = [
     "auth_router",
@@ -27,4 +28,5 @@ __all__ = [
     "referrals_router",
     "wallet_router",
     "maintenance_router",
+    "vacations_router",
 ]

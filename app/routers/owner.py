@@ -520,26 +520,43 @@ async def verify_tenant_profile(
 # ========== Manual Tenant Addition ==========
 
 @router.get("/lookup-tenant", dependencies=[Depends(require_owner)])
-async def lookup_tenant_by_email(
-    email: str,
+async def lookup_tenant(
+    query: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Look up a tenant by email to verify they exist and are verified before adding."""
-    email_clean = email.strip().lower()
-    if not email_clean or "@" not in email_clean:
-        raise HTTPException(status_code=400, detail="Valid email is required")
+    """Look up a tenant by email or phone number to verify they exist and are verified before adding."""
+    query_clean = query.strip().lower()
+    if not query_clean:
+        raise HTTPException(status_code=400, detail="Valid email or phone number is required")
 
-    user = db.query(User).filter(User.email == email_clean).first()
+    # Try to find user by email first
+    user = db.query(User).filter(User.email == query_clean).first()
+    
+    # If not found by email, try finding by phone number in Profile
+    if not user:
+        # Basic phone normalization: take only last 10 digits for matching or try exact match
+        digits_only = "".join(filter(str.isdigit, query_clean))
+        if digits_only:
+            # Match by phone ending with digits or exact match
+            profile_query = db.query(Profile).filter(
+                (Profile.phone == digits_only) | 
+                (Profile.phone.endswith(digits_only[-10:] if len(digits_only) >= 10 else digits_only))
+            )
+            profile = profile_query.first()
+            if profile:
+                user = db.query(User).filter(User.id == profile.user_id).first()
+
     if not user:
         raise HTTPException(
             status_code=404,
-            detail="No account found with this email. The tenant must sign up on He&She PG first."
+            detail="No account found with this email or phone number. The tenant must sign up on He&She PG first."
         )
+    
     if not user.is_verified:
         raise HTTPException(
             status_code=400,
-            detail="This account is not verified yet. The tenant must complete signup and verify their email first."
+            detail="This account is not verified yet. The tenant must complete signup and verify their account first."
         )
 
     # Role Check: Only customers can be added as tenants
@@ -560,6 +577,7 @@ async def lookup_tenant_by_email(
 
     return {
         "found": True,
+        "tenant_id": str(user.id),
         "tenant_name": profile.name if profile else "Tenant",
         "tenant_phone": profile.phone if profile else "",
         "tenant_email": user.email,
@@ -569,7 +587,8 @@ async def lookup_tenant_by_email(
 
 
 class AddTenantRequest(BaseModel):
-    email: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
     join_date: Optional[date] = None
 
 
@@ -580,10 +599,10 @@ async def add_tenant_to_room(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Add a verified tenant to a room by their email. Tenant must have signed up first."""
+    """Add a verified tenant to a room. Tenant must have signed up first."""
     try:
-        if not request.email.strip() or "@" not in request.email:
-            raise HTTPException(status_code=400, detail="Valid email is required")
+        if not request.email and not request.phone:
+            raise HTTPException(status_code=400, detail="Email or phone number is required")
 
         # Get the room
         room = db.query(Room).filter(Room.id == room_id).first()
@@ -599,17 +618,29 @@ async def add_tenant_to_room(
         if room.vacancy_count is not None and room.vacancy_count <= 0:
             raise HTTPException(status_code=400, detail="No vacancy available in this room")
 
-        # Look up verified user by email
-        tenant_user = db.query(User).filter(User.email == request.email.strip().lower()).first()
+        # Look up verified user
+        tenant_user = None
+        if request.email:
+            tenant_user = db.query(User).filter(User.email == request.email.strip().lower()).first()
+        
+        if not tenant_user and request.phone:
+            digits_only = "".join(filter(str.isdigit, request.phone))
+            profile = db.query(Profile).filter(
+                (Profile.phone == digits_only) | 
+                (Profile.phone.endswith(digits_only[-10:] if len(digits_only) >= 10 else digits_only))
+            ).first()
+            if profile:
+                tenant_user = db.query(User).filter(User.id == profile.user_id).first()
+
         if not tenant_user:
             raise HTTPException(
                 status_code=404,
-                detail="No account found with this email. The tenant must sign up on He&She PG first."
+                detail="No account found. The tenant must sign up on He&She PG first."
             )
         if not tenant_user.is_verified:
             raise HTTPException(
                 status_code=400,
-                detail="This account is not verified yet. The tenant must complete their signup and verify their email first."
+                detail="This account is not verified yet. The tenant must complete their signup and verify their account first."
             )
 
         # Role Check: Only customers can be added as tenants

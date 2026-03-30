@@ -32,6 +32,7 @@ from app.routers import (
     referrals_router,
     wallet_router,
     maintenance_router,
+    vacations_router,
 )
 from app.routers.websocket import router as websocket_router
 from app.routers.cities import router as cities_router
@@ -88,6 +89,7 @@ async def lifespan(app: FastAPI):
                 "invoice_status": ("pending", "paid", "overdue", "cancelled"),
                 "transaction_type": ("credit", "debit", "hold", "release", "withdrawal"),
                 "transaction_status": ("pending", "otp_sent", "verified", "completed", "failed", "refunded", "rejected"),
+                "vacationstatus": ("upcoming", "active", "completed", "cancelled"),
             }
             for enum_name, values in enums.items():
                 values_str = ", ".join(f"'{v}'" for v in values)
@@ -108,6 +110,10 @@ async def lifespan(app: FastAPI):
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_requested'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacated'",
                 "ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'upcoming'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'active'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'completed'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'cancelled'",
             ]
             for sql in enum_additions:
                 try:
@@ -400,6 +406,7 @@ app.include_router(roommates_router, prefix="/api")
 app.include_router(referrals_router, prefix="/api")
 app.include_router(wallet_router, prefix="/api")
 app.include_router(maintenance_router, prefix="/api")
+app.include_router(vacations_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
 app.include_router(cities_router, prefix="/api")
 app.include_router(announcements_router)
