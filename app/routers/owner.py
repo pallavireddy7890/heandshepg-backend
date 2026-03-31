@@ -432,6 +432,7 @@ async def get_rent_management_data(
         if not owned_property_ids:
             return {"tenants": [], "stats": {"total_tenants": 0, "paid_count": 0, "unpaid_count": 0, "collected_amount": 0}}
 
+        today = date.today()
         if month > 0:
             # Monthly View
             last_day = calendar.monthrange(year, month)[1]
@@ -442,7 +443,6 @@ async def get_rent_management_data(
             period_end = month_end
             
             # Future Month Check: If selected month/year is in the future, don't show names
-            today = date.today()
             if year > today.year or (year == today.year and month > today.month):
                 return {
                     "tenants": [], 
@@ -457,6 +457,18 @@ async def get_rent_management_data(
             # Yearly View
             period_start = date(year, 1, 1)
             period_end = date(year, 12, 31)
+
+            # Future Year Check
+            if year > today.year:
+                return {
+                    "tenants": [], 
+                    "stats": {
+                        "total_tenants": 0, 
+                        "paid_count": 0, 
+                        "unpaid_count": 0, 
+                        "collected_amount": 0
+                    }
+                }
 
         # Find active bookings in this period
         active_bookings = db.query(Booking).filter(
