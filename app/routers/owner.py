@@ -73,6 +73,27 @@ class FinancialSummary(BaseModel):
     monthly_revenue: float
 
 
+class RentManagementItem(BaseModel):
+    id: UUID
+    booking_id: UUID
+    tenant_name: str
+    phone: Optional[str]
+    email: str
+    property_title: str
+    room_number: Optional[str]
+    monthly_rent: float
+    status: str  # paid, unpaid, partial
+    payment_type: Optional[str]
+    payment_date: Optional[datetime]
+    last_payment_method: Optional[str]
+    due_date: Optional[date] = None
+
+
+class RentManagementResponse(BaseModel):
+    tenants: List[RentManagementItem]
+    stats: dict
+
+
 # ========== Owner Properties ==========
 
 @router.get("/properties", dependencies=[Depends(require_owner)])
@@ -382,6 +403,241 @@ async def get_financial_summary(
             "monthly_revenue": float(monthly_revenue),
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rent-management", response_model=RentManagementResponse, dependencies=[Depends(require_owner)])
+async def get_rent_management_data(
+    month: int = Query(..., ge=0, le=12),  # 0 means yearly
+    year: int = Query(..., ge=2000),
+    property_id: Optional[UUID] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get rent management data for a specific month/year or the entire year.
+    Only includes tenants active during that period.
+    """
+    import calendar
+    from sqlalchemy import or_, and_
+    from app.models.wallet import WalletTransaction, TransactionStatus
+
+    try:
+        # Get owner's property IDs
+        prop_query = db.query(Property.id).filter(Property.owner_id == current_user.id)
+        if property_id:
+            prop_query = prop_query.filter(Property.id == property_id)
+        
+        owned_property_ids = [p.id for p in prop_query.all()]
+        if not owned_property_ids:
+            return {"tenants": [], "stats": {"total_tenants": 0, "paid_count": 0, "unpaid_count": 0, "collected_amount": 0}}
+
+        if month > 0:
+            # Monthly View
+            last_day = calendar.monthrange(year, month)[1]
+            month_start = date(year, month, 1)
+            month_end = date(year, month, last_day)
+            
+            period_start = month_start
+            period_end = month_end
+            
+            # Future Month Check: If selected month/year is in the future, don't show names
+            today = date.today()
+            if year > today.year or (year == today.year and month > today.month):
+                return {
+                    "tenants": [], 
+                    "stats": {
+                        "total_tenants": 0, 
+                        "paid_count": 0, 
+                        "unpaid_count": 0, 
+                        "collected_amount": 0
+                    }
+                }
+        else:
+            # Yearly View
+            period_start = date(year, 1, 1)
+            period_end = date(year, 12, 31)
+
+        # Find active bookings in this period
+        active_bookings = db.query(Booking).filter(
+            Booking.property_id.in_(owned_property_ids),
+            Booking.start_date <= period_end,
+            or_(Booking.end_date == None, Booking.end_date >= period_start),
+            Booking.status.in_([
+                BookingStatus.active, 
+                BookingStatus.paid, 
+                BookingStatus.checked_in, 
+                BookingStatus.vacate_requested
+            ])
+        ).all()
+
+        tenants_data = []
+        collected_amount = 0
+        paid_count = 0
+        unpaid_count = 0
+
+        for booking in active_bookings:
+            user = db.query(User).filter(User.id == booking.customer_id).first()
+            if not user: continue
+            
+            profile = db.query(Profile).filter(Profile.user_id == booking.customer_id).first()
+            prop = db.query(Property).filter(Property.id == booking.property_id).first()
+            room = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
+
+            # Get payments for this booking within the period
+            start_dt = datetime.combine(period_start, datetime.min.time())
+            end_dt = datetime.combine(period_end, datetime.max.time())
+
+            payments = db.query(WalletTransaction).filter(
+                WalletTransaction.booking_id == booking.id,
+                WalletTransaction.status == TransactionStatus.completed,
+                WalletTransaction.payment_type.in_(['rent', 'total']),
+                WalletTransaction.created_at >= start_dt,
+                WalletTransaction.created_at <= end_dt
+            ).all()
+
+            # Calculate Due Date for this month/year (based on start_date's day)
+            if month > 0:
+                day_of_month = booking.start_date.day
+                # Handle edge cases (e.g., joining on 31st, month only has 30 days)
+                max_days = calendar.monthrange(year, month)[1]
+                due_on = min(day_of_month, max_days)
+                calculated_due_date = date(year, month, due_on)
+            else:
+                calculated_due_date = None
+
+            if month > 0:
+                # Monthly Logic - Aggregated
+                total_paid_this_period = sum(p.amount for p in payments) / 100
+                collected_amount += total_paid_this_period
+                
+                if total_paid_this_period >= booking.amount:
+                    status = "paid"
+                    paid_count += 1
+                elif total_paid_this_period > 0:
+                    status = f"partial (₹{total_paid_this_period:,.0f})"
+                    paid_count += 1 # Or handle as partially paid
+                else:
+                    status = "unpaid"
+                    unpaid_count += 1
+                
+                # Get the latest payment for p_type and p_date
+                if payments:
+                    latest_payment = sorted(payments, key=lambda x: x.created_at, reverse=True)[0]
+                    p_type = latest_payment.payment_method
+                    p_date = latest_payment.created_at
+                else:
+                    p_type = None
+                    p_date = None
+            else:
+                # Yearly Logic - Aggregate
+                total_paid = sum(p.amount for p in payments) / 100
+                collected_amount += total_paid
+                
+                if total_paid > 0:
+                    status = f"Paid ₹{total_paid:,.0f}"
+                    paid_count += 1
+                else:
+                    status = "No Payments"
+                    unpaid_count += 1
+                
+                p_type = "Multiple" if len(payments) > 1 else (payments[0].payment_method if payments else None)
+                p_date = payments[-1].created_at if payments else None
+
+            tenants_data.append({
+                "id": user.id,
+                "booking_id": booking.id,
+                "tenant_name": profile.name if profile else user.email,
+                "phone": profile.phone if profile else None,
+                "email": user.email,
+                "property_title": prop.title,
+                "room_number": room.room_number if room else None,
+                "monthly_rent": booking.amount,
+                "status": status,
+                "payment_type": p_type,
+                "payment_date": p_date,
+                "last_payment_method": p_type,
+                "due_date": calculated_due_date
+            })
+
+        return {
+            "tenants": tenants_data,
+            "stats": {
+                "total_tenants": len(active_bookings),
+                "paid_count": paid_count,
+                "unpaid_count": unpaid_count,
+                "collected_amount": collected_amount
+            }
+        }
+    except Exception as e:
+        print(f"Error in rent management: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== Tenant Transaction History ==========
+
+@router.get("/tenant-transactions/{booking_id}", dependencies=[Depends(require_owner)])
+async def get_tenant_transaction_history(
+    booking_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get all wallet transactions for a specific booking (tenant payment history)."""
+    from app.models.wallet import WalletTransaction, TransactionStatus
+
+    try:
+        # Get the booking
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+
+        # Verify ownership
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        if not property_obj or property_obj.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        # Get tenant info
+        profile = db.query(Profile).filter(Profile.user_id == booking.customer_id).first()
+        user = db.query(User).filter(User.id == booking.customer_id).first()
+        room = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
+
+        # Get all transactions for this booking
+        transactions = db.query(WalletTransaction).filter(
+            WalletTransaction.booking_id == booking_id,
+            WalletTransaction.status.in_([
+                TransactionStatus.completed,
+                TransactionStatus.pending,
+                TransactionStatus.verified,
+            ])
+        ).order_by(WalletTransaction.created_at.desc()).all()
+
+        result = []
+        for txn in transactions:
+            result.append({
+                "id": str(txn.id),
+                "amount": txn.amount / 100,  # Convert paise to rupees
+                "payment_type": txn.payment_type or "rent",
+                "payment_method": txn.payment_method or "online",
+                "status": txn.status.value if hasattr(txn.status, 'value') else str(txn.status),
+                "description": txn.description,
+                "offline_notes": txn.offline_notes,
+                "offline_reference": txn.offline_reference,
+                "created_at": txn.created_at.isoformat() if txn.created_at else None,
+            })
+
+        return {
+            "tenant_name": profile.name if profile else (user.email if user else "Unknown"),
+            "tenant_email": user.email if user else "",
+            "room_number": room.room_number if room else None,
+            "property_title": property_obj.title if property_obj else None,
+            "monthly_rent": booking.amount or 0,
+            "transactions": result,
+            "total_paid": sum(t["amount"] for t in result if t["status"] == "completed"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in tenant transaction history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
