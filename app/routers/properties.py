@@ -192,17 +192,8 @@ async def update_property(
     for field, value in update_data.items():
         setattr(property, field, value)
     
-    # Handle nested rooms if provided
-    if rooms_data is not None:
-        # Simple implementation: delete old rooms and create new ones
-        # For a more "accurate" sync, we'd match by ID, but create/update often implies a full reset in simple PG apps
-        db.query(Room).filter(Room.property_id == property_id).delete()
-        for room_data in rooms_data:
-            new_room = Room(
-                property_id=property_id,
-                **room_data.model_dump()
-            )
-            db.add(new_room)
+    # Nested room updates are no longer handled here to prevent accidental data deletion.
+    # Rooms should be managed through their dedicated endpoints (/properties/{property_id}/rooms).
     
     db.commit()
     db.refresh(property)
