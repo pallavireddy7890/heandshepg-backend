@@ -93,12 +93,16 @@ async def list_bookings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     status_filter: str = None,
+    property_id: Optional[UUID] = None,
 ):
     """List current user's bookings (as customer or owner)."""
     try:
         query = db.query(Booking).filter(
             (Booking.customer_id == current_user.id) | (Booking.owner_id == current_user.id)
         )
+        
+        if property_id:
+            query = query.filter(Booking.property_id == property_id)
         
         if status_filter:
             query = query.filter(Booking.status == status_filter)
