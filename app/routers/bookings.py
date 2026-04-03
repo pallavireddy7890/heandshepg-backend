@@ -152,6 +152,8 @@ async def list_bookings(
                 } if property_obj else None,
                 "room": {
                     "room_type": room_obj.room_type,
+                    "room_number": room_obj.room_number,
+                    "floor_number": room_obj.floor_number,
                     "bed_count": room_obj.bed_count,
                     "room_description": room_obj.room_description,
                     "price": room_obj.price,
