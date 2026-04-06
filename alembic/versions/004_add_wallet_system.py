@@ -29,8 +29,19 @@ def upgrade() -> None:
     )
     
     # Create enums
-    op.execute("CREATE TYPE transaction_type AS ENUM ('credit', 'debit', 'hold', 'release')")
-    op.execute("CREATE TYPE transaction_status AS ENUM ('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded')")
+    # Create transaction_type/status enums with idempotency
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE transaction_type AS ENUM ('credit', 'debit', 'hold', 'release');
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE transaction_status AS ENUM ('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded');
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+    """)
     
     # Create wallets table
     op.create_table(
