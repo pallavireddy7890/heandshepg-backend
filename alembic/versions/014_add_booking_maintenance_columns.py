@@ -21,14 +21,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add maintenance and payment tracking columns to bookings table."""
-    # Add maintenance_charge column
-    op.add_column('bookings', sa.Column('maintenance_charge', sa.Integer(), nullable=True, server_default='0'))
+    # Use inspector instead of raw SQL
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('bookings')]
     
-    # Add payment tracking boolean columns
-    op.add_column('bookings', sa.Column('rent_paid', sa.Boolean(), nullable=True, server_default='false'))
-    op.add_column('bookings', sa.Column('deposit_paid', sa.Boolean(), nullable=True, server_default='false'))
-    op.add_column('bookings', sa.Column('maintenance_paid', sa.Boolean(), nullable=True, server_default='false'))
+    # 1. Add maintenance_charge column if missing
+    if 'maintenance_charge' not in columns:
+        op.add_column('bookings', sa.Column('maintenance_charge', sa.Integer(), nullable=True, server_default='0'))
+    
+    # 2. Add payment tracking boolean columns if missing
+    if 'rent_paid' not in columns:
+        op.add_column('bookings', sa.Column('rent_paid', sa.Boolean(), nullable=True, server_default='false'))
+    if 'deposit_paid' not in columns:
+        op.add_column('bookings', sa.Column('deposit_paid', sa.Boolean(), nullable=True, server_default='false'))
+    if 'maintenance_paid' not in columns:
+        op.add_column('bookings', sa.Column('maintenance_paid', sa.Boolean(), nullable=True, server_default='false'))
 
 
 def downgrade() -> None:

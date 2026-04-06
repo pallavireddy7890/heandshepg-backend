@@ -22,14 +22,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add bed_id column to bookings table."""
-    op.add_column('bookings', sa.Column('bed_id', UUID(as_uuid=True), nullable=True))
-    op.create_foreign_key(
-        'fk_bookings_bed_id_room_beds',
-        'bookings', 'room_beds',
-        ['bed_id'], ['id'],
-        ondelete='SET NULL'
-    )
+    # Use inspector instead of raw SQL
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('bookings')]
+    
+    # 1. Add bed_id column if missing
+    if 'bed_id' not in columns:
+        op.add_column('bookings', sa.Column('bed_id', UUID(as_uuid=True), nullable=True))
+    
+    # 2. Add foreign key safely
+    # Note: create_foreign_key doesn't have IF NOT EXISTS, so we use a check
+    constraints = [c['name'] for c in inspector.get_foreign_keys('bookings')]
+    if 'fk_bookings_bed_id_room_beds' not in constraints:
+        op.create_foreign_key(
+            'fk_bookings_bed_id_room_beds',
+            'bookings', 'room_beds',
+            ['bed_id'], ['id'],
+            ondelete='SET NULL'
+        )
 
 
 def downgrade() -> None:
