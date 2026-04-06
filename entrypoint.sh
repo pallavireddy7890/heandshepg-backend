@@ -1,14 +1,17 @@
 #!/bin/bash
 set -e
 
-echo "[ENTRYPOINT] Running database migrations..."
+echo "[ENTRYPOINT] Running database repair and migrations..."
+python scripts/repair_db_production.py
 
-# Try to run alembic upgrade. If alembic_version table doesn't exist or
-# has a mismatch, stamp to latest and skip (startup sync in main.py handles columns)
-alembic upgrade head 2>&1 || {
-    echo "[ENTRYPOINT] Migration failed, stamping current state..."
-    alembic stamp head 2>&1 || echo "[ENTRYPOINT] Stamp also failed (non-fatal)"
+# Try to run alembic upgrade. 
+alembic upgrade head || {
+    echo "[ENTRYPOINT] Migration failed. Check logs for details."
+    # We no longer 'stamp head' automatically because it can lead to silent schema gaps.
+    # Manual intervention is preferred if migrations fail.
 }
 
 echo "[ENTRYPOINT] Starting application..."
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Use $PORT from environment (default to 8000 if not set)
+PORT=${PORT:-8000}
+exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
