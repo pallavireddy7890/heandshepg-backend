@@ -2,24 +2,26 @@
 
 Revision ID: 023_add_referral_code_to_email_verifications
 Revises: 022_add_profile_notification_columns
-Create Date: 2026-03-18
-
 """
-from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-
-# revision identifiers, used by Alembic.
-revision: str = '023_add_referral_code_to_email_verifications'
-down_revision: Union[str, None] = '022_add_profile_notification_columns'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+# revision identifiers
+revision = '023_add_referral_code_to_email_verifications'
+down_revision = '022_add_profile_notification_columns'
 
 
 def upgrade() -> None:
-    op.execute("ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS referral_code VARCHAR(20)")
+    # Use inspector instead of raw SQL
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    
+    # Check if table exists first (in case it was dropped by a later migration)
+    if 'email_verifications' in inspector.get_table_names():
+        columns = [c['name'] for c in inspector.get_columns('email_verifications')]
+        if 'referral_code' not in columns:
+            op.add_column('email_verifications', sa.Column('referral_code', sa.String(20), nullable=True))
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE email_verifications DROP COLUMN IF EXISTS referral_code")
+    pass

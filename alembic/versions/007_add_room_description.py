@@ -19,8 +19,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add room_description column to rooms table."""
-    op.add_column('rooms', sa.Column('room_description', sa.Text(), nullable=True))
+    """Add room_description column to rooms table with idempotency."""
+    op.execute("ALTER TABLE rooms ADD COLUMN IF NOT EXISTS room_description TEXT")
 
 
 def downgrade() -> None:

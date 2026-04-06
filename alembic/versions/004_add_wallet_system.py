@@ -16,6 +16,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    tables = inspector.get_table_names()
+    
     # 1. Create Enum Types with idempotency
     op.execute("""
         DO $$ BEGIN
@@ -28,64 +32,49 @@ def upgrade() -> None:
         END $$;
     """)
     
-    # 2. Create Wallets Table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS wallets (
-            id UUID PRIMARY KEY,
-            user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-            balance INTEGER DEFAULT 0,
-            pending_balance INTEGER DEFAULT 0,
-            is_active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS ix_wallets_user_id ON wallets(user_id);
-    """)
-
-    # 3. Create Wallet Transactions Table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS wallet_transactions (
-            id UUID PRIMARY KEY,
-            wallet_id UUID NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
-            booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
-            payer_id UUID REFERENCES users(id) ON DELETE SET NULL,
-            receiver_id UUID REFERENCES users(id) ON DELETE SET NULL,
-            amount INTEGER NOT NULL,
-            transaction_type transaction_type NOT NULL,
-            status transaction_status DEFAULT 'pending',
-            otp_verified BOOLEAN DEFAULT FALSE,
-            otp_verified_at TIMESTAMP WITH TIME ZONE,
-            razorpay_payment_id VARCHAR(255),
-            razorpay_order_id VARCHAR(255),
-            description TEXT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS ix_wallet_transactions_wallet_id ON wallet_transactions(wallet_id);
-        CREATE INDEX IF NOT EXISTS ix_wallet_transactions_status ON wallet_transactions(status);
-    """)
+    # 2. Create Wallets Table if missing
+    if 'wallets' not in tables:
+        op.create_table(
+            'wallets',
+            sa.Column('id', sa.UUID(), primary_key=True),
+            sa.Column('user_id', sa.UUID(), sa.ForeignKey('users.id', ondelete='CASCADE'), unique=True, nullable=False),
+            sa.Column('balance', sa.Integer(), server_default='0'),
+            sa.Column('pending_balance', sa.Integer(), server_default='0'),
+            sa.Column('is_active', sa.Boolean(), server_default='true'),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now())
+        )
     
-    # 4. Create Transaction OTPs Table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS transaction_otps (
-            id UUID PRIMARY KEY,
-            transaction_id UUID NOT NULL REFERENCES wallet_transactions(id) ON DELETE CASCADE,
-            otp_code VARCHAR(6) NOT NULL,
-            otp_type VARCHAR(20) NOT NULL,
-            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            is_verified BOOLEAN DEFAULT FALSE,
-            attempts INTEGER DEFAULT 0,
-            max_attempts INTEGER DEFAULT 3,
-            expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-            verified_at TIMESTAMP WITH TIME ZONE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS ix_transaction_otps_transaction_id ON transaction_otps(transaction_id);
-    """)
+    # 3. Create Wallet Transactions Table if missing
+    if 'wallet_transactions' not in tables:
+        op.create_table(
+            'wallet_transactions',
+            sa.Column('id', sa.UUID(), primary_key=True),
+            sa.Column('wallet_id', sa.UUID(), sa.ForeignKey('wallets.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('amount', sa.Integer(), nullable=False),
+            sa.Column('transaction_type', sa.Enum('credit', 'debit', 'hold', 'release', name='transaction_type', create_type=False), nullable=False),
+            sa.Column('status', sa.Enum('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded', name='transaction_status', create_type=False), server_default='pending'),
+            sa.Column('reference_id', sa.String(length=255)),
+            sa.Column('metadata', sa.JSON()),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now())
+        )
+    
+    # 4. Create Transaction OTPs Table if missing
+    if 'transaction_otps' not in tables:
+        op.create_table(
+            'transaction_otps',
+            sa.Column('id', sa.UUID(), primary_key=True),
+            sa.Column('transaction_id', sa.UUID(), sa.ForeignKey('wallet_transactions.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('otp_code', sa.String(6), nullable=False),
+            sa.Column('otp_type', sa.String(20), nullable=False),
+            sa.Column('user_id', sa.UUID(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('is_verified', sa.Boolean(), server_default='false'),
+            sa.Column('attempts', sa.Integer(), server_default='0'),
+            sa.Column('max_attempts', sa.Integer(), server_default='3'),
+            sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+            sa.Column('verified_at', sa.DateTime(timezone=True)),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now())
+        )
 
 def downgrade() -> None:
-    op.drop_table('transaction_otps')
-    op.drop_table('wallet_transactions')
-    op.drop_table('wallets')
-    op.execute("DROP TYPE IF EXISTS transaction_status")
-    op.execute("DROP TYPE IF EXISTS transaction_type")
+    pass

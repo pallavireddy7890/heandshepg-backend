@@ -2,38 +2,36 @@
 
 Revision ID: add_notification_logs
 Revises: sync_all_models
-Create Date: 2026-01-18
-
 """
 from alembic import op
 import sqlalchemy as sa
 
-
-# revision identifiers, used by Alembic.
+# revision identifiers
 revision = 'add_notification_logs'
 down_revision = 'sync_all_models'
-branch_labels = None
-depends_on = None
 
 
 def upgrade() -> None:
-    """Create notification_logs table."""
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS notification_logs (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
-            notification_type VARCHAR(50) NOT NULL,
-            status VARCHAR(20) NOT NULL,
-            error_message TEXT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    tables = inspector.get_table_names()
+    
+    # 1. Create Table if missing (without raw SQL)
+    if 'notification_logs' not in tables:
+        op.create_table(
+            'notification_logs',
+            sa.Column('id', sa.UUID(), primary_key=True),
+            sa.Column('user_id', sa.UUID(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('notification_type', sa.String(50), nullable=False),
+            sa.Column('status', sa.String(20), nullable=False),
+            sa.Column('error_message', sa.Text()),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now())
         )
-    """)
-    # Create indexes
-    op.execute("CREATE INDEX IF NOT EXISTS ix_notification_logs_user_id ON notification_logs(user_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_notification_logs_notification_type ON notification_logs(notification_type)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_notification_logs_created_at ON notification_logs(created_at)")
-
+        # Indexes are automatically created by op.create_table if configured, 
+        # or we can add them manually with Alembic functions:
+        op.create_index('ix_notification_logs_user_id', 'notification_logs', ['user_id'])
+        op.create_index('ix_notification_logs_notification_type', 'notification_logs', ['notification_type'])
+        op.create_index('ix_notification_logs_created_at', 'notification_logs', ['created_at'])
 
 def downgrade() -> None:
-    """Drop notification_logs table."""
-    op.execute("DROP TABLE IF EXISTS notification_logs CASCADE")
+    pass
