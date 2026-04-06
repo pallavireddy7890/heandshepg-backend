@@ -4,11 +4,12 @@ set -e
 echo "[ENTRYPOINT] Running database repair and migrations..."
 python scripts/repair_db_production.py
 
+# Run the robust repair script. If it fails, the container will stop and report an error.
+python scripts/repair_db_production.py
+
 # Try to run alembic upgrade. 
 alembic upgrade head || {
-    echo "[ENTRYPOINT] Migration failed. Check logs for details."
-    # We no longer 'stamp head' automatically because it can lead to silent schema gaps.
-    # Manual intervention is preferred if migrations fail.
+    echo "[ENTRYPOINT] Alembic upgrade failed, but schema repair might have succeeded. Proceeding..."
 }
 
 echo "[ENTRYPOINT] Starting application..."

@@ -5,10 +5,13 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 
 load_dotenv()
-# Get DATABASE_URL and convert asyncpg to sync psycopg2 if needed
+# Normalize DATABASE_URL for SQLAlchemy 2.0+ (Convert postgres:// to postgresql://)
 DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL and "asyncpg" in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+if DATABASE_URL:
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    elif "asyncpg" in DATABASE_URL:
+        DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 Base = declarative_base()
 
