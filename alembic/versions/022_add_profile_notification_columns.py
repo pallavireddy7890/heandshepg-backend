@@ -1,13 +1,13 @@
 """Add notification/privacy/bank columns to profiles
 
-Revision ID: 022_add_profile_notification_columns
+Revision ID: 022_profile_notify
 Revises: 021_add_wallet_offline_ref
 """
 from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers
-revision = '022_add_profile_notification_columns'
+revision: str = '022_profile_notify'
 down_revision = '021_add_wallet_offline_ref'
 
 

@@ -1,14 +1,14 @@
 """add referral_code to email_verifications
 
-Revision ID: 023_add_referral_code_to_email_verifications
-Revises: 022_add_profile_notification_columns
+Revision ID: 023_referral_code
+Revises: 022_profile_notify
 """
 from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers
-revision = '023_add_referral_code_to_email_verifications'
-down_revision = '022_add_profile_notification_columns'
+revision = '023_referral_code'
+down_revision = '022_profile_notify'
 
 
 def upgrade() -> None:
