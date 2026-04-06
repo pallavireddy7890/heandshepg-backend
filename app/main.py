@@ -177,6 +177,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS college_company_id_url TEXT",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_verification_status VARCHAR(20) DEFAULT 'pending'",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS hosting_since DATE",
+                # === EMAIL VERIFICATIONS ===
+                "ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS referral_code VARCHAR(20)",
                 # === PROPERTIES ===
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS city_id UUID REFERENCES cities(id) ON DELETE SET NULL",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS locality VARCHAR(100)",

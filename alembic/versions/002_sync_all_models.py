@@ -120,14 +120,15 @@ def upgrade() -> None:
     """)
     
     # Update referrals table to match new schema (add missing columns)
-    try:
-        op.add_column('referrals', sa.Column('referred_id', sa.UUID(), nullable=True))
-        op.add_column('referrals', sa.Column('referral_code_id', sa.UUID(), nullable=True))
-        op.add_column('referrals', sa.Column('status', sa.String(20), server_default='pending'))
-        op.add_column('referrals', sa.Column('booking_id', sa.UUID(), nullable=True))
-        op.add_column('referrals', sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True))
-    except Exception:
-        pass  # Columns may already exist
+    referral_columns_sql = [
+        "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS referred_id UUID",
+        "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS referral_code_id UUID",
+        "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'",
+        "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS booking_id UUID",
+        "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP WITH TIME ZONE",
+    ]
+    for sql in referral_columns_sql:
+        op.execute(sql)
 
 
 def downgrade() -> None:
