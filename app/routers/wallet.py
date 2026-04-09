@@ -144,6 +144,8 @@ async def get_my_pending_payments(
         result.append({
             "id": str(txn.id),
             "transaction_id": str(txn.id),
+            "booking_id": str(txn.booking_id) if txn.booking_id else None,
+            "payment_type": txn.payment_type if hasattr(txn, 'payment_type') else 'total',
             "amount": txn.amount / 100,  # In INR
             "owner_name": owner_profile.name if owner_profile else "Property Owner",
             "property_title": property_title,
@@ -229,6 +231,19 @@ async def initiate_wallet_payment(
     # Booking must be accepted before payment
     if booking.status not in ["accepted", "requested"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be 'accepted' to make payment. Current: {booking.status}")
+    
+    # Check for existing pending transaction of the same type for this booking
+    # This prevents 'why this got three' confusion by blocking extra starts
+    existing_txn = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == UUID(request.booking_id),
+        WalletTransaction.payment_type == request.payment_type,
+        WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent])
+    ).first()
+    if existing_txn:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
+        )
     
     # Check for vacancy before allowing payment initiation
     if booking.room_id:
@@ -366,6 +381,18 @@ async def initiate_offline_wallet_payment(
     # Booking must be accepted before payment
     if booking.status not in ["accepted", "requested"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Booking must be accepted to make payment")
+    
+    # Check for existing pending transaction of the same type for this booking
+    existing_txn = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == UUID(request.booking_id),
+        WalletTransaction.payment_type == request.payment_type,
+        WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent])
+    ).first()
+    if existing_txn:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
+        )
     
     # Get owner's wallet
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
@@ -861,7 +888,14 @@ async def delete_transaction(
         
     # Verify ownership
     user_role = get_user_role(current_user, db)
-    if user_role != "admin" and str(transaction.receiver_id) != str(current_user.id):
+    is_owner = str(transaction.receiver_id) == str(current_user.id)
+    is_payer = str(transaction.payer_id) == str(current_user.id)
+    
+    # Payer can only delete if transaction is NOT completed
+    if is_payer:
+        if transaction.status == TransactionStatus.completed:
+            raise HTTPException(status_code=403, detail="You cannot delete a completed transaction. Please contact the owner for a refund.")
+    elif not is_owner and user_role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized to delete this transaction")
         
     # Reverse wallet impact if necessary
