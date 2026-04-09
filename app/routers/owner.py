@@ -9,7 +9,7 @@ from sqlalchemy import func, text, String
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Profile, Property, Booking, Payment, Invoice, Room, PaymentStatus, BookingStatus
+from app.models import User, Profile, Property, Booking, Payment, Invoice, Room, PaymentStatus, BookingStatus, SystemSettings
 from app.utils.security import get_current_user, require_role, get_user_role
 from app.services.vacancy import sync_room_vacancy
 
@@ -1176,3 +1176,42 @@ async def owner_global_search(
     except Exception as e:
         print(f"Error in owner search: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== System Settings (Whitelisted) ==========
+
+@router.get("/settings/{key}", dependencies=[Depends(require_owner)])
+async def get_owner_setting(
+    key: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Get a specific system setting value.
+    Only allows specific whitelisted keys for security.
+    """
+    whitelist = [
+        "max_properties_per_owner",
+        "referral_reward",
+        "cancellation_policy_hours",
+        "minimum_booking_days"
+    ]
+    
+    if key not in whitelist:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access to this setting is restricted"
+        )
+    
+    setting = db.query(SystemSettings).filter(SystemSettings.key == key).first()
+    
+    if not setting:
+        # Return default values if setting not found in DB
+        defaults = {
+            "max_properties_per_owner": "10",
+            "referral_reward": "500",
+            "cancellation_policy_hours": "24",
+            "minimum_booking_days": "30"
+        }
+        return {"key": key, "value": defaults.get(key, "")}
+    
+    return {"key": setting.key, "value": setting.value}

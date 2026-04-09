@@ -8,7 +8,7 @@ from sqlalchemy import func
 from datetime import date, timedelta
 
 from app.database import get_db
-from app.models import User, Property, Room, Review, Profile
+from app.models import User, Property, Room, Review, Profile, SystemSettings
 from app.schemas import (
     PropertyCreate,
     PropertyUpdate,
@@ -141,6 +141,22 @@ async def create_property(
     db: Session = Depends(get_db)
 ):
     """Create a new property (owner only)."""
+    # Check max properties limit
+    limit_setting = db.query(SystemSettings).filter(SystemSettings.key == "max_properties_per_owner").first()
+    max_limit = 10  # Default fallback
+    if limit_setting and limit_setting.value:
+        try:
+            max_limit = int(limit_setting.value)
+        except ValueError:
+            pass
+
+    existing_count = db.query(Property).filter(Property.owner_id == current_user.id).count()
+    if existing_count >= max_limit:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Property limit reached. You can only list up to {max_limit} properties."
+        )
+
     # Extract rooms if provided
     rooms_data = property_data.rooms
     property_dict = property_data.model_dump(exclude={"rooms"})
