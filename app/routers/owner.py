@@ -87,11 +87,91 @@ class RentManagementItem(BaseModel):
     payment_date: Optional[datetime]
     last_payment_method: Optional[str]
     due_date: Optional[date] = None
+    security_paid: float = 0
+    maintenance_paid: float = 0
 
 
 class RentManagementResponse(BaseModel):
     tenants: List[RentManagementItem]
     stats: dict
+
+
+# ========== Helpers ==========
+
+def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: int):
+    from sqlalchemy import and_, or_
+    from app.models.wallet import WalletTransaction, TransactionStatus
+    from datetime import datetime, date
+    import calendar
+
+    # Selection date range
+    period_start = date(year, month, 1)
+    period_end = date(year, month, calendar.monthrange(year, month)[1])
+    start_dt = datetime.combine(period_start, datetime.min.time())
+    end_dt = datetime.combine(period_end, datetime.max.time())
+
+    # Query payments for this booking
+    # For initial month, we also look for 'total' payments made at any time for this booking
+    is_first_month = (booking.start_date.year == year and booking.start_date.month == month)
+    
+    if is_first_month:
+        payments = db.query(WalletTransaction).filter(
+            WalletTransaction.booking_id == booking.id,
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.payment_type.in_(['rent', 'total', 'deposit', 'maintenance']),
+            or_(
+                and_(WalletTransaction.created_at >= start_dt, WalletTransaction.created_at <= end_dt),
+                WalletTransaction.payment_type == 'total'
+            )
+        ).all()
+    else:
+        payments = db.query(WalletTransaction).filter(
+            WalletTransaction.booking_id == booking.id,
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.payment_type.in_(['rent', 'total', 'deposit', 'maintenance']),
+            WalletTransaction.created_at >= start_dt,
+            WalletTransaction.created_at <= end_dt
+        ).all()
+
+    rent_paid = 0
+    security_paid = 0
+    maintenance_paid = 0
+    p_date = None
+    p_type = None
+
+    for p in payments:
+        if not p_date or p.created_at > p_date:
+            p_date = p.created_at
+            p_type = p.payment_type
+
+        if p.payment_type == 'rent':
+            rent_paid += p.amount / 100
+        elif p.payment_type == 'total':
+            # Attribute portions based on booking record
+            rent_paid += booking.amount
+            security_paid += (booking.security_deposit or 0)
+            maintenance_paid += (booking.maintenance_charge or 0)
+        elif p.payment_type == 'deposit':
+            security_paid += p.amount / 100
+        elif p.payment_type == 'maintenance':
+            maintenance_paid += p.amount / 100
+
+    # Determine Status
+    if rent_paid >= booking.amount:
+        status = "paid"
+    elif rent_paid > 0:
+        status = f"partial (₹{rent_paid:,.0f})"
+    else:
+        status = "unpaid"
+
+    return {
+        "rent_paid": rent_paid,
+        "security_paid": security_paid,
+        "maintenance_paid": maintenance_paid,
+        "status": status,
+        "last_payment_date": p_date,
+        "last_payment_type": p_type
+    }
 
 
 # ========== Owner Properties ==========
@@ -103,6 +183,7 @@ async def get_owner_properties(
 ):
     """Get all properties owned by the current user."""
     try:
+        today = date.today()
         properties = db.query(Property).filter(
             Property.owner_id == current_user.id
         ).order_by(Property.created_at.desc()).all()
@@ -139,6 +220,7 @@ async def get_owner_properties(
                     "deposit": r.deposit,
                     "security_deposit": r.security_deposit,
                     "maintenance_charge": r.maintenance_charge,
+                    "status_month": today.strftime('%B %Y'),
                     "vacancy_count": r.bed_count - len([
                         b for b in db.query(Booking).filter(
                             Booking.room_id == r.id,
@@ -164,6 +246,9 @@ async def get_owner_properties(
                         "phone": db.query(Profile).filter(Profile.user_id == b.customer_id).first().phone if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None,
                         "start_date": b.start_date.isoformat() if b.start_date else None,
                         "room_id": str(r.id),
+                        "status": calculate_month_rent_stats(
+                            db, b, date.today().month, date.today().year
+                        )["status"]
                     } for b in db.query(Booking).filter(
                         Booking.room_id == r.id,
                         # Filter by business logic - active or soon-to-be active tenants
@@ -496,65 +581,31 @@ async def get_rent_management_data(
             prop = db.query(Property).filter(Property.id == booking.property_id).first()
             room = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
 
-            # Get payments for this booking within the period
-            start_dt = datetime.combine(period_start, datetime.min.time())
-            end_dt = datetime.combine(period_end, datetime.max.time())
+            # Use unified helper for status and amounts
+            m_stats = calculate_month_rent_stats(db, booking, month if month > 0 else today.month, year if month > 0 else today.year)
+            
+            rent_this_period = m_stats["rent_paid"]
+            security_this_period = m_stats["security_paid"]
+            maintenance_this_period = m_stats["maintenance_paid"]
+            status = m_stats["status"]
+            p_date = m_stats["last_payment_date"]
+            p_type = m_stats["last_payment_type"]
 
-            payments = db.query(WalletTransaction).filter(
-                WalletTransaction.booking_id == booking.id,
-                WalletTransaction.status == TransactionStatus.completed,
-                WalletTransaction.payment_type.in_(['rent', 'total']),
-                WalletTransaction.created_at >= start_dt,
-                WalletTransaction.created_at <= end_dt
-            ).all()
+            if status == "paid":
+                paid_count += 1
+            elif "partial" in status:
+                paid_count += 1
+            else:
+                unpaid_count += 1
 
-            # Calculate Due Date for this month/year (based on start_date's day)
+            # Calculate Due Date
             if month > 0:
                 day_of_month = booking.start_date.day
-                # Handle edge cases (e.g., joining on 31st, month only has 30 days)
                 max_days = calendar.monthrange(year, month)[1]
                 due_on = min(day_of_month, max_days)
                 calculated_due_date = date(year, month, due_on)
             else:
                 calculated_due_date = None
-
-            if month > 0:
-                # Monthly Logic - Aggregated
-                total_paid_this_period = sum(p.amount for p in payments) / 100
-                collected_amount += total_paid_this_period
-                
-                if total_paid_this_period >= booking.amount:
-                    status = "paid"
-                    paid_count += 1
-                elif total_paid_this_period > 0:
-                    status = f"partial (₹{total_paid_this_period:,.0f})"
-                    paid_count += 1 # Or handle as partially paid
-                else:
-                    status = "unpaid"
-                    unpaid_count += 1
-                
-                # Get the latest payment for p_type and p_date
-                if payments:
-                    latest_payment = sorted(payments, key=lambda x: x.created_at, reverse=True)[0]
-                    p_type = latest_payment.payment_method
-                    p_date = latest_payment.created_at
-                else:
-                    p_type = None
-                    p_date = None
-            else:
-                # Yearly Logic - Aggregate
-                total_paid = sum(p.amount for p in payments) / 100
-                collected_amount += total_paid
-                
-                if total_paid > 0:
-                    status = f"Paid ₹{total_paid:,.0f}"
-                    paid_count += 1
-                else:
-                    status = "No Payments"
-                    unpaid_count += 1
-                
-                p_type = "Multiple" if len(payments) > 1 else (payments[0].payment_method if payments else None)
-                p_date = payments[-1].created_at if payments else None
 
             tenants_data.append({
                 "id": user.id,
@@ -570,7 +621,10 @@ async def get_rent_management_data(
                 "payment_type": p_type,
                 "payment_date": p_date,
                 "last_payment_method": p_type,
-                "due_date": calculated_due_date
+                "due_date": calculated_due_date,
+                "security_paid": security_this_period,
+                "maintenance_paid": maintenance_this_period,
+                "rent_paid_this_period": rent_this_period
             })
 
         return {
@@ -579,7 +633,7 @@ async def get_rent_management_data(
                 "total_tenants": len(active_bookings),
                 "paid_count": paid_count,
                 "unpaid_count": unpaid_count,
-                "collected_amount": collected_amount
+                "collected_amount": sum(t.get('rent_paid_this_period', 0) for t in tenants_data)
             }
         }
     except Exception as e:
