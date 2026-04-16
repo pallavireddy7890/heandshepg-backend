@@ -938,8 +938,10 @@ async def add_tenant_to_room(
         if not property_obj or property_obj.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="This room does not belong to your property")
 
-        # Check vacancy
-        if room.vacancy_count is not None and room.vacancy_count <= 0:
+        # Refresh stored vacancy before enforcing the rule so stale room state
+        # does not block valid tenant assignments.
+        current_vacancy = sync_room_vacancy(db, room.id)
+        if current_vacancy <= 0:
             raise HTTPException(status_code=400, detail="No vacancy available in this room")
 
         # Look up verified user

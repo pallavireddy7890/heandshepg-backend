@@ -181,6 +181,10 @@ def sync_room_vacancy(db: Session, room_id: UUID) -> int:
     room = db.query(Room).filter(Room.id == room_id).first()
     if not room:
         return 0
+
+    # This project uses sessions with autoflush disabled, so make sure any
+    # pending booking changes are visible before we recalculate occupancy.
+    db.flush()
         
     # Real occupied beds are those with these persistent statuses
     occupied_statuses = ['paid', 'checked_in', 'active', 'vacate_requested']
