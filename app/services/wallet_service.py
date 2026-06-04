@@ -90,62 +90,66 @@ class WalletService:
         return wallet
     
     @staticmethod
-    def get_balance(db: Session, user_id: UUID) -> dict:
+    def get_balance(db: Session, user_id: UUID, property_id: Optional[UUID] = None) -> dict:
         """Get wallet balance for a user with online/offline breakdown."""
         wallet = WalletService.get_or_create_wallet(db, user_id)
         
-        # Calculate breakdowns from transactions
-        # Online/Internal completed (available for platform payments)
-        online_completed = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.wallet_id == wallet.id,
-            WalletTransaction.payment_method == 'online',
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.transaction_type == TransactionType.credit
-        ).scalar() or 0
-        
-        # Offline completed (cash/manual by owner, NOT available for platform payments)
-        offline_completed = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.wallet_id == wallet.id,
-            WalletTransaction.payment_method != 'online',
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.transaction_type == TransactionType.credit
-        ).scalar() or 0
-        
-        # Pending transactions
-        online_pending = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.wallet_id == wallet.id,
-            WalletTransaction.payment_method == 'online',
-            WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified]),
-            WalletTransaction.transaction_type == TransactionType.credit
-        ).scalar() or 0
-        
-        offline_pending = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.wallet_id == wallet.id,
-            WalletTransaction.payment_method != 'online',
-            WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified]),
-            WalletTransaction.transaction_type == TransactionType.credit
-        ).scalar() or 0
+        def build_sum_query(payment_method_online: Optional[bool], status_list: list, tx_type: TransactionType) -> int:
+            q = db.query(func.sum(WalletTransaction.amount)).filter(
+                WalletTransaction.wallet_id == wallet.id,
+                WalletTransaction.transaction_type == tx_type
+            )
+            if payment_method_online is not None:
+                if payment_method_online:
+                    q = q.filter(WalletTransaction.payment_method == 'online')
+                else:
+                    q = q.filter(WalletTransaction.payment_method != 'online')
+            if status_list:
+                q = q.filter(WalletTransaction.status.in_(status_list))
+                
+            if property_id:
+                from app.models import Booking
+                q = q.join(Booking, WalletTransaction.booking_id == Booking.id).filter(Booking.property_id == property_id)
+                
+            return q.scalar() or 0
 
-        # Calculate withdrawals
-        withdrawals_completed = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.wallet_id == wallet.id,
-            WalletTransaction.transaction_type == TransactionType.withdrawal,
-            WalletTransaction.status == TransactionStatus.completed
-        ).scalar() or 0
+        online_completed = build_sum_query(True, [TransactionStatus.completed], TransactionType.credit)
+        offline_completed = build_sum_query(False, [TransactionStatus.completed], TransactionType.credit)
         
-        withdrawals_pending = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.wallet_id == wallet.id,
-            WalletTransaction.transaction_type == TransactionType.withdrawal,
-            WalletTransaction.status == TransactionStatus.pending
-        ).scalar() or 0
+        online_pending = build_sum_query(True, [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
+        offline_pending = build_sum_query(False, [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
+        
+        # Withdrawals are not associated with properties, so they are 0 if property_id is provided
+        if property_id:
+            withdrawals_completed = 0
+            withdrawals_pending = 0
+        else:
+            withdrawals_completed = db.query(func.sum(WalletTransaction.amount)).filter(
+                WalletTransaction.wallet_id == wallet.id,
+                WalletTransaction.transaction_type == TransactionType.withdrawal,
+                WalletTransaction.status == TransactionStatus.completed
+            ).scalar() or 0
+            
+            withdrawals_pending = db.query(func.sum(WalletTransaction.amount)).filter(
+                WalletTransaction.wallet_id == wallet.id,
+                WalletTransaction.transaction_type == TransactionType.withdrawal,
+                WalletTransaction.status == TransactionStatus.pending
+            ).scalar() or 0
 
-        # Total successful credits that can be used for bookings (balance - used_for_withdrawals)
-        # We use online_completed because offline payments (cash) don't give the platform money to pay owners
+        # Calculate dynamic balances
         available = max(0, online_completed - withdrawals_completed - withdrawals_pending)
+        
+        # If property-specific, total balance and pending balance are computed dynamically for that property
+        if property_id:
+            balance_val = online_completed + offline_completed
+            pending_balance_val = online_pending + offline_pending
+        else:
+            balance_val = wallet.balance
+            pending_balance_val = wallet.pending_balance
 
         return {
-            "balance": wallet.balance,
-            "pending_balance": wallet.pending_balance,
+            "balance": balance_val,
+            "pending_balance": pending_balance_val,
             "available_balance": available,
             "online_balance": online_completed - withdrawals_completed,
             "offline_balance": offline_completed,
@@ -153,7 +157,7 @@ class WalletService:
             "pending_offline": offline_pending,
             "pending_withdrawals": withdrawals_pending,
             "currency": "INR",
-            "balance_inr": wallet.balance / 100,
+            "balance_inr": balance_val / 100,
         }
     
     @staticmethod
@@ -467,7 +471,8 @@ class WalletService:
     def get_transactions(
         db: Session,
         user_id: UUID,
-        limit: int = 50
+        limit: int = 50,
+        property_id: Optional[UUID] = None
     ) -> list:
         """Get transaction history for a user."""
         # Get user's wallet (may be None)
@@ -476,17 +481,23 @@ class WalletService:
         # Build query - include transactions where user is payer or receiver
         # even if they don't have a wallet yet
         if wallet:
-            transactions = db.query(WalletTransaction).filter(
+            query = db.query(WalletTransaction).filter(
                 (WalletTransaction.wallet_id == wallet.id) |
                 (WalletTransaction.payer_id == user_id) |
                 (WalletTransaction.receiver_id == user_id)
-            ).order_by(WalletTransaction.created_at.desc()).limit(limit).all()
+            )
         else:
             # No wallet yet - still show transactions where user is payer/receiver
-            transactions = db.query(WalletTransaction).filter(
+            query = db.query(WalletTransaction).filter(
                 (WalletTransaction.payer_id == user_id) |
                 (WalletTransaction.receiver_id == user_id)
-            ).order_by(WalletTransaction.created_at.desc()).limit(limit).all()
+            )
+        
+        if property_id:
+            from app.models import Booking
+            query = query.join(Booking, WalletTransaction.booking_id == Booking.id).filter(Booking.property_id == property_id)
+            
+        transactions = query.order_by(WalletTransaction.created_at.desc()).limit(limit).all()
         
         result = []
         for txn in transactions:

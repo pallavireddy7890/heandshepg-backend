@@ -1,5 +1,6 @@
 """Authentication router."""
 import re
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
@@ -32,6 +33,19 @@ from app.config import get_settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 settings = get_settings()
+logger = logging.getLogger("heandshepg")
+
+
+def safe_verify_password(password: str, hashed_password: str, email: str) -> bool:
+    """Safely verify password, catching and logging any hashing exceptions to prevent crashes."""
+    try:
+        return verify_password(password, hashed_password)
+    except Exception as e:
+        try:
+            logger.exception(f"Password verification raised an exception for user: {email}")
+        except Exception:
+            pass
+        return False
 
 
 @router.get("/debug-sms")
@@ -470,7 +484,13 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     """Login with email and password."""
     user = db.query(User).filter(User.email == form_data.username).first()
     
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not safe_verify_password(form_data.password, user.hashed_password, user.email):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -541,8 +561,7 @@ async def login_json(login_data: UserLogin, db: Session = Depends(get_db)):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User account not found",
             )
-    
-    if not verify_password(login_data.password, user.hashed_password):
+    if not safe_verify_password(login_data.password, user.hashed_password, user.email):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect password",
@@ -686,7 +705,7 @@ async def reset_password(data: PasswordResetConfirm, db: Session = Depends(get_d
         )
     
     # Prevent reusing the current password
-    if verify_password(data.new_password, user.hashed_password):
+    if safe_verify_password(data.new_password, user.hashed_password, user.email):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Your new password cannot be the same as your current password. Please choose a different password."
@@ -713,7 +732,7 @@ async def change_password(
 ):
     """Change password for authenticated user."""
     # Verify current password
-    if not verify_password(data.current_password, current_user.hashed_password):
+    if not safe_verify_password(data.current_password, current_user.hashed_password, current_user.email):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect"

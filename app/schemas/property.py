@@ -38,6 +38,7 @@ class RoomBase(BaseModel):
     width_ft: Optional[int] = Field(None, ge=0)
     has_ventilation: Optional[bool] = True
     maintenance_charge: Optional[int] = Field(0, ge=0)
+    refundable_amount: Optional[int] = Field(0, ge=0)
 
 
 class RoomCreate(RoomBase):
@@ -68,6 +69,7 @@ class RoomUpdate(BaseModel):
     width_ft: Optional[int] = Field(None, ge=0)
     has_ventilation: Optional[bool] = None
     maintenance_charge: Optional[int] = Field(None, ge=0)
+    refundable_amount: Optional[int] = Field(None, ge=0)
 
 
 class RoomResponse(RoomBase):

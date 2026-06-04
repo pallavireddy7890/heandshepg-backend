@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # Debug - Default is False for production safety
     debug: bool = False
     
+    # Logging level
+    log_level: str = "INFO"
+    
     class Config:
         env_file = ".env"
         extra = "allow"
