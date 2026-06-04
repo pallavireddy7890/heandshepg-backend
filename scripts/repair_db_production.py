@@ -43,9 +43,17 @@ def repair_db():
     logger.info(f"Connecting to database...")
     try:
         engine = create_engine(DATABASE_URL)
+        
+        # Ensure all base tables are created in the database first
+        logger.info("Ensuring all base tables exist in schema...")
+        from app.database import Base
+        import app.models  # Load and register all models with Base.metadata
+        Base.metadata.create_all(bind=engine)
+        logger.info("Base tables verified/created successfully.")
+        
         conn = engine.connect()
     except Exception as e:
-        logger.critical(f"Connection failed: {e}")
+        logger.critical(f"Database connection or initialization failed: {e}")
         sys.exit(1)
 
     try:
