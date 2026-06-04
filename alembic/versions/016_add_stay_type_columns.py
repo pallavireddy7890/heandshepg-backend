@@ -2,43 +2,30 @@
 
 Revision ID: 016_add_stay_type
 Revises: 015_essential_cols
-Create Date: 2026-02-06
-
-Adds the missing columns that are in the Booking model but not in the database:
-- stay_type: VARCHAR(20) DEFAULT 'monthly'
-- duration_days: INTEGER
-- customer_snapshot: JSONB
 """
-from typing import Sequence, Union
-
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
-
-# revision identifiers, used by Alembic.
-revision: str = '016_add_stay_type'
-down_revision: Union[str, None] = '015_essential_cols'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+# revision identifiers
+revision = '016_add_stay_type'
+down_revision = '015_essential_cols'
 
 
 def upgrade() -> None:
-    """Add stay_type, duration_days, and customer_snapshot columns to bookings."""
+    # Use inspector instead of raw SQL
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('bookings')]
     
-    # Add missing bookings columns
-    booking_columns = [
-        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS stay_type VARCHAR(20) DEFAULT 'monthly'",
-        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS duration_days INTEGER",
-        "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS customer_snapshot JSONB",
-    ]
-    
-    for sql in booking_columns:
-        op.execute(sql)
+    # 1. Add missing bookings columns with Inspector check
+    if 'stay_type' not in columns:
+        op.add_column('bookings', sa.Column('stay_type', sa.String(20), server_default='monthly'))
+    if 'duration_days' not in columns:
+        op.add_column('bookings', sa.Column('duration_days', sa.Integer()))
+    if 'customer_snapshot' not in columns:
+        op.add_column('bookings', sa.Column('customer_snapshot', JSONB))
 
 
 def downgrade() -> None:
-    """Remove stay_type, duration_days, and customer_snapshot columns from bookings."""
-    op.execute("ALTER TABLE bookings DROP COLUMN IF EXISTS customer_snapshot")
-    op.execute("ALTER TABLE bookings DROP COLUMN IF EXISTS duration_days")
-    op.execute("ALTER TABLE bookings DROP COLUMN IF EXISTS stay_type")
+    pass

@@ -2,26 +2,25 @@
 
 Revision ID: 020_add_payment_date
 Revises: 019_payment_schema_fix
-Create Date: 2026-03-03
-
 """
-from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-
-# revision identifiers, used by Alembic.
-revision: str = '020_add_payment_date'
-down_revision: Union[str, None] = '019_payment_schema_fix'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+# revision identifiers
+revision = '020_add_payment_date'
+down_revision = '019_payment_schema_fix'
 
 
 def upgrade() -> None:
-    # Add payment_date column safely
-    op.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_date TIMESTAMP WITH TIME ZONE")
+    # Use inspector instead of raw SQL
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('payments')]
+    
+    # 1. Add payment_date column safely
+    if 'payment_date' not in columns:
+        op.add_column('payments', sa.Column('payment_date', sa.DateTime(timezone=True)))
 
 
 def downgrade() -> None:
-    # Remove added column
-    op.execute("ALTER TABLE payments DROP COLUMN IF EXISTS payment_date")
+    pass

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from app.database import SessionLocal
-from app.models import Booking, Payment, User, Profile, Property, Notification, Room
+from app.models import Booking, Payment, User, Profile, Property, Notification, Room, Vacation, VacationStatus
 from app.services.wallet_service import WalletService
 import uuid
 
@@ -432,6 +432,55 @@ def complete_ended_stays():
         db.close()
 
 
+def update_vacation_statuses():
+    """Update vacation statuses based on the current date.
+    
+    Logic:
+    - upcoming -> active: if start_date <= today
+    - active -> completed: if end_date < today
+    """
+    logger.info("Running vacation status update check...")
+    db = SessionLocal()
+    try:
+        today = datetime.utcnow().date()
+        
+        # 1. Start upcoming vacations
+        upcoming_vacations = db.query(Vacation).filter(
+            Vacation.status == VacationStatus.upcoming,
+            Vacation.start_date <= today
+        ).all()
+        
+        started_count = 0
+        for v in upcoming_vacations:
+            v.status = VacationStatus.active
+            started_count += 1
+            logger.info(f"Vacation started: {v.id} (Tenant: {v.tenant_id})")
+            
+        # 2. Complete ended vacations
+        active_vacations = db.query(Vacation).filter(
+            Vacation.status == VacationStatus.active,
+            Vacation.end_date < today
+        ).all()
+        
+        completed_count = 0
+        for v in active_vacations:
+            v.status = VacationStatus.completed
+            completed_count += 1
+            logger.info(f"Vacation completed: {v.id} (Tenant: {v.tenant_id})")
+            
+        if started_count > 0 or completed_count > 0:
+            db.commit()
+            logger.info(f"Updated {started_count} vacations to ACTIVE and {completed_count} to COMPLETED")
+        else:
+            logger.info("No vacation status updates needed")
+            
+    except Exception as e:
+        logger.error(f"Error in vacation status update: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def setup_scheduler(app):
     """Set up APScheduler with background jobs."""
     try:
@@ -482,6 +531,15 @@ def setup_scheduler(app):
             CronTrigger(hour=1, minute=0),
             id="complete_ended_stays",
             name="Complete Ended Stays",
+            replace_existing=True
+        )
+        
+        # Update vacation statuses daily at 12:05 AM
+        scheduler.add_job(
+            update_vacation_statuses,
+            CronTrigger(hour=0, minute=5),
+            id="update_vacation_statuses",
+            name="Update Vacation Statuses",
             replace_existing=True
         )
         

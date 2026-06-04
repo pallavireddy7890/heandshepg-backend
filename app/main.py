@@ -32,6 +32,7 @@ from app.routers import (
     referrals_router,
     wallet_router,
     maintenance_router,
+    vacations_router,
 )
 from app.routers.websocket import router as websocket_router
 from app.routers.cities import router as cities_router
@@ -88,6 +89,7 @@ async def lifespan(app: FastAPI):
                 "invoice_status": ("pending", "paid", "overdue", "cancelled"),
                 "transaction_type": ("credit", "debit", "hold", "release", "withdrawal"),
                 "transaction_status": ("pending", "otp_sent", "verified", "completed", "failed", "refunded", "rejected"),
+                "vacationstatus": ("upcoming", "active", "completed", "cancelled"),
             }
             for enum_name, values in enums.items():
                 values_str = ", ".join(f"'{v}'" for v in values)
@@ -108,6 +110,10 @@ async def lifespan(app: FastAPI):
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_requested'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacated'",
                 "ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'upcoming'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'active'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'completed'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'cancelled'",
             ]
             for sql in enum_additions:
                 try:
@@ -171,6 +177,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS college_company_id_url TEXT",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_verification_status VARCHAR(20) DEFAULT 'pending'",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS hosting_since DATE",
+                # === EMAIL VERIFICATIONS ===
+                "ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS referral_code VARCHAR(20)",
                 # === PROPERTIES ===
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS city_id UUID REFERENCES cities(id) ON DELETE SET NULL",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS locality VARCHAR(100)",
@@ -267,6 +275,14 @@ async def lifespan(app: FastAPI):
                 # === MAINTENANCE_TICKETS ===
                 "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS room_id UUID REFERENCES rooms(id) ON DELETE SET NULL",
                 "ALTER TABLE maintenance_tickets ADD COLUMN IF NOT EXISTS booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL",
+                # === BLOCKED_USERS ===
+                # Table is created by Base.metadata.create_all, but ensure unique constraint exists
+                """DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_blocker_blocked') THEN
+                        ALTER TABLE blocked_users ADD CONSTRAINT uq_blocker_blocked UNIQUE (blocker_id, blocked_id);
+                    END IF;
+                EXCEPTION WHEN undefined_table THEN NULL;
+                END $$""",
             ]
             for sql in sync_statements:
                 try:
@@ -392,6 +408,7 @@ app.include_router(roommates_router, prefix="/api")
 app.include_router(referrals_router, prefix="/api")
 app.include_router(wallet_router, prefix="/api")
 app.include_router(maintenance_router, prefix="/api")
+app.include_router(vacations_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
 app.include_router(cities_router, prefix="/api")
 app.include_router(announcements_router)

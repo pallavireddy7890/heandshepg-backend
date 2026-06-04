@@ -16,79 +16,65 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Create enum types
-    transaction_type_enum = postgresql.ENUM(
-        'credit', 'debit', 'hold', 'release',
-        name='transaction_type',
-        create_type=False
-    )
-    transaction_status_enum = postgresql.ENUM(
-        'pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded',
-        name='transaction_status',
-        create_type=False
-    )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    tables = inspector.get_table_names()
     
-    # Create enums
-    op.execute("CREATE TYPE transaction_type AS ENUM ('credit', 'debit', 'hold', 'release')")
-    op.execute("CREATE TYPE transaction_status AS ENUM ('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded')")
+    # 1. Create Enum Types with idempotency
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'transaction_type') THEN
+                CREATE TYPE transaction_type AS ENUM ('credit', 'debit', 'hold', 'release');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'transaction_status') THEN
+                CREATE TYPE transaction_status AS ENUM ('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded');
+            END IF;
+        END $$;
+    """)
     
-    # Create wallets table
-    op.create_table(
-        'wallets',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column('user_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('users.id', ondelete='CASCADE'), unique=True, nullable=False),
-        sa.Column('balance', sa.Integer(), default=0),
-        sa.Column('pending_balance', sa.Integer(), default=0),
-        sa.Column('is_active', sa.Boolean(), default=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
-    )
-    op.create_index('ix_wallets_user_id', 'wallets', ['user_id'])
+    # 2. Create Wallets Table if missing
+    if 'wallets' not in tables:
+        op.create_table(
+            'wallets',
+            sa.Column('id', sa.UUID(), primary_key=True),
+            sa.Column('user_id', sa.UUID(), sa.ForeignKey('users.id', ondelete='CASCADE'), unique=True, nullable=False),
+            sa.Column('balance', sa.Integer(), server_default='0'),
+            sa.Column('pending_balance', sa.Integer(), server_default='0'),
+            sa.Column('is_active', sa.Boolean(), server_default='true'),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now())
+        )
     
-    # Create wallet_transactions table
-    op.create_table(
-        'wallet_transactions',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column('wallet_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('wallets.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('booking_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('bookings.id', ondelete='SET NULL')),
-        sa.Column('payer_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('users.id', ondelete='SET NULL')),
-        sa.Column('receiver_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('users.id', ondelete='SET NULL')),
-        sa.Column('amount', sa.Integer(), nullable=False),
-        sa.Column('transaction_type', postgresql.ENUM('credit', 'debit', 'hold', 'release', name='transaction_type', create_type=False), nullable=False),
-        sa.Column('status', postgresql.ENUM('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded', name='transaction_status', create_type=False), default='pending'),
-        sa.Column('otp_verified', sa.Boolean(), default=False),
-        sa.Column('otp_verified_at', sa.DateTime(timezone=True)),
-        sa.Column('razorpay_payment_id', sa.String(255)),
-        sa.Column('razorpay_order_id', sa.String(255)),
-        sa.Column('description', sa.Text()),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
-    )
-    op.create_index('ix_wallet_transactions_wallet_id', 'wallet_transactions', ['wallet_id'])
-    op.create_index('ix_wallet_transactions_booking_id', 'wallet_transactions', ['booking_id'])
-    op.create_index('ix_wallet_transactions_status', 'wallet_transactions', ['status'])
+    # 3. Create Wallet Transactions Table if missing
+    if 'wallet_transactions' not in tables:
+        op.create_table(
+            'wallet_transactions',
+            sa.Column('id', sa.UUID(), primary_key=True),
+            sa.Column('wallet_id', sa.UUID(), sa.ForeignKey('wallets.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('amount', sa.Integer(), nullable=False),
+            sa.Column('transaction_type', sa.Enum('credit', 'debit', 'hold', 'release', name='transaction_type', create_type=False), nullable=False),
+            sa.Column('status', sa.Enum('pending', 'otp_sent', 'verified', 'completed', 'failed', 'refunded', name='transaction_status', create_type=False), server_default='pending'),
+            sa.Column('reference_id', sa.String(length=255)),
+            sa.Column('metadata', sa.JSON()),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now())
+        )
     
-    # Create transaction_otps table
-    op.create_table(
-        'transaction_otps',
-        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column('transaction_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('wallet_transactions.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('otp_code', sa.String(6), nullable=False),
-        sa.Column('otp_type', sa.String(20), nullable=False),
-        sa.Column('user_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('is_verified', sa.Boolean(), default=False),
-        sa.Column('attempts', sa.Integer(), default=0),
-        sa.Column('max_attempts', sa.Integer(), default=3),
-        sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('verified_at', sa.DateTime(timezone=True)),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
-    op.create_index('ix_transaction_otps_transaction_id', 'transaction_otps', ['transaction_id'])
-
+    # 4. Create Transaction OTPs Table if missing
+    if 'transaction_otps' not in tables:
+        op.create_table(
+            'transaction_otps',
+            sa.Column('id', sa.UUID(), primary_key=True),
+            sa.Column('transaction_id', sa.UUID(), sa.ForeignKey('wallet_transactions.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('otp_code', sa.String(6), nullable=False),
+            sa.Column('otp_type', sa.String(20), nullable=False),
+            sa.Column('user_id', sa.UUID(), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False),
+            sa.Column('is_verified', sa.Boolean(), server_default='false'),
+            sa.Column('attempts', sa.Integer(), server_default='0'),
+            sa.Column('max_attempts', sa.Integer(), server_default='3'),
+            sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+            sa.Column('verified_at', sa.DateTime(timezone=True)),
+            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now())
+        )
 
 def downgrade() -> None:
-    op.drop_table('transaction_otps')
-    op.drop_table('wallet_transactions')
-    op.drop_table('wallets')
-    op.execute("DROP TYPE IF EXISTS transaction_status")
-    op.execute("DROP TYPE IF EXISTS transaction_type")
+    pass

@@ -2,49 +2,45 @@
 
 Revision ID: 019_payment_schema_fix
 Revises: 018_fix_wallet_transactions
-Create Date: 2026-03-03
-
 """
-from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 
-# revision identifiers, used by Alembic.
-revision: str = '019_payment_schema_fix'
-down_revision: Union[str, None] = '018_fix_wallet_transactions'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+# revision identifiers
+revision = '019_payment_schema_fix'
+down_revision = '018_fix_wallet_transactions'
 
 
 def upgrade() -> None:
-    # Add missing columns to payments table safely
-    op.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'online'")
-    op.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS offline_reference TEXT")
-    op.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS verified_by_id UUID")
+    # Use inspector instead of raw SQL
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('payments')]
     
-    # Add foreign key safely (if verified_by_id was just added)
-    op.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.table_constraints 
-                WHERE constraint_name='fk_payments_verified_by_id' AND table_name='payments'
-            ) THEN
-                ALTER TABLE payments ADD CONSTRAINT fk_payments_verified_by_id 
-                FOREIGN KEY (verified_by_id) REFERENCES users(id) ON DELETE SET NULL;
-            END IF;
-        END $$;
-    """)
+    # 1. Add missing columns safely
+    if 'payment_method' not in columns:
+        op.add_column('payments', sa.Column('payment_method', sa.String(20), server_default='online'))
+    if 'offline_reference' not in columns:
+        op.add_column('payments', sa.Column('offline_reference', sa.Text()))
+    if 'verified_by_id' not in columns:
+        op.add_column('payments', sa.Column('verified_by_id', sa.UUID()))
+    
+    # 2. Add foreign key safely
+    constraints = [c['name'] for c in inspector.get_foreign_keys('payments')]
+    if 'fk_payments_verified_by_id' not in constraints:
+        op.create_foreign_key(
+            'fk_payments_verified_by_id',
+            'payments', 'users',
+            ['verified_by_id'], ['id'],
+            ondelete='SET NULL'
+        )
 
-    # Add new value to payment_status enum
+    # 3. Add new value to payment_status enum
+    # Native check is complex for enums, using safe raw SQL
+    op.execute("COMMIT")
     op.execute("ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'")
 
 
 def downgrade() -> None:
-    # Remove added columns
-    op.execute("ALTER TABLE payments DROP COLUMN IF EXISTS verified_by_id")
-    op.execute("ALTER TABLE payments DROP COLUMN IF EXISTS offline_reference")
-    op.execute("ALTER TABLE payments DROP COLUMN IF EXISTS payment_method")
-    
-    # Note: Removing enum values is complex in PostgreSQL and generally avoided.
     pass

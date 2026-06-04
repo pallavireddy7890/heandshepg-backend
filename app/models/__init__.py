@@ -5,13 +5,15 @@ from app.models.booking import Booking, Payment, Invoice, BookingStatus, Payment
 from app.models.review import Review, Favorite
 from app.models.message import Conversation, Message, Notification
 from app.models.admin import AuditLog, SystemSettings
-from app.models.features import RoommateProfile, RoommateMatch, ReferralCode, Referral
+from app.models.features import RoommateProfile, RoommateMatch, RoommateMessage, ReferralCode, Referral
+from app.models.blocked_user import BlockedUser
 from app.models.city import City, Area
 from app.models.notification_log import NotificationLog
 from app.models.wallet import Wallet, WalletTransaction, TransactionOTP, TransactionType, TransactionStatus
 from app.models.email_verification import EmailVerification
 from app.models.announcement import Announcement, AnnouncementPriority
 from app.models.maintenance import Ticket, TicketPriority, TicketStatus
+from app.models.vacation import Vacation, VacationStatus
 
 
 __all__ = [
@@ -48,6 +50,7 @@ __all__ = [
     # Feature models
     "RoommateProfile",
     "RoommateMatch",
+    "RoommateMessage",
     "ReferralCode",
     "Referral",
     # Location models
@@ -70,6 +73,11 @@ __all__ = [
     "Ticket",
     "TicketPriority",
     "TicketStatus",
+    # Blocked users
+    "BlockedUser",
+    # Vacation models
+    "Vacation",
+    "VacationStatus",
 ]
 
 
