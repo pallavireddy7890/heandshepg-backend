@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import User, Profile, UserRole, OwnersProfile, AuditLog, SystemSettings, AppRole, KycStatus, WalletTransaction, TransactionType, TransactionStatus, Property, Booking
 from app.utils.security import get_current_user, require_role
+from app.schemas import PropertyStatusUpdateResponse, PropertyDeletionResponse
 
 require_admin = require_role("admin")
 logger = logging.getLogger(__name__)
@@ -495,7 +496,7 @@ async def get_all_properties_for_moderation(
     return result
 
 
-@router.put("/properties/{property_id}/moderate", dependencies=[Depends(require_admin)])
+@router.put("/properties/{property_id}/moderate", response_model=PropertyStatusUpdateResponse, dependencies=[Depends(require_admin)])
 async def moderate_property(
     property_id: UUID,
     moderation_data: PropertyModerationRequest,
@@ -504,8 +505,6 @@ async def moderate_property(
     db: Session = Depends(get_db),
 ):
     """Moderate a property - set to active/inactive/banned (admin only)."""
-    from app.models import Property
-    
     valid_statuses = ["active", "inactive", "banned", "pending"]
     if moderation_data.status not in valid_statuses:
         raise HTTPException(
@@ -513,30 +512,18 @@ async def moderate_property(
             detail=f"Invalid status. Must be one of: {valid_statuses}"
         )
     
-    property = db.query(Property).filter(Property.id == property_id).first()
-    
-    if not property:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Property not found")
-    
-    old_status = property.status
-    property.status = moderation_data.status
-    
-    # Create audit log
-    create_audit_log(
+    from app.services.property_service import PropertyService
+    return await PropertyService.moderate_property(
         db=db,
-        user_id=current_user.id,
-        action="property_moderation",
-        entity_type="property",
-        entity_id=property_id,
-        details=f"Changed status from {old_status} to {moderation_data.status}. Reason: {moderation_data.reason or 'Not specified'}",
-        ip_address=request.client.host if request.client else None,
+        property_id=property_id,
+        status_value=moderation_data.status,
+        reason=moderation_data.reason,
+        current_user_id=current_user.id,
+        ip_address=request.client.host if request.client else None
     )
-    
-    db.commit()
-    return {"message": f"Property status updated to {moderation_data.status}"}
 
 
-@router.delete("/properties/{property_id}", dependencies=[Depends(require_admin)])
+@router.delete("/properties/{property_id}", response_model=PropertyDeletionResponse, dependencies=[Depends(require_admin)])
 async def admin_delete_property(
     property_id: UUID,
     request: Request,
@@ -544,27 +531,14 @@ async def admin_delete_property(
     db: Session = Depends(get_db),
 ):
     """Delete a property (admin only)."""
-    from app.models import Property
-    
-    property = db.query(Property).filter(Property.id == property_id).first()
-    
-    if not property:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Property not found")
-    
-    # Create audit log before deletion
-    create_audit_log(
+    from app.services.property_service import PropertyService
+    return await PropertyService.delete_property(
         db=db,
-        user_id=current_user.id,
-        action="property_deletion",
-        entity_type="property",
-        entity_id=property_id,
-        details=f"Deleted property: {property.title}",
-        ip_address=request.client.host if request.client else None,
+        property_id=property_id,
+        current_user_id=current_user.id,
+        is_admin=True,
+        ip_address=request.client.host if request.client else None
     )
-    
-    db.delete(property)
-    db.commit()
-    return {"message": "Property deleted successfully"}
 
 
 # ========== Setup Endpoint (for fixing admin role) ==========

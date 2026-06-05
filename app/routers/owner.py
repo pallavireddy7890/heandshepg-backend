@@ -11,8 +11,11 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import User, Profile, Property, Booking, Payment, Invoice, Room, PaymentStatus, BookingStatus, SystemSettings
 from app.utils.security import get_current_user, require_role, get_user_role
+from app.schemas import PropertyDeletionResponse
 from app.services.vacancy import sync_room_vacancy
 
+import logging
+logger = logging.getLogger(__name__)
 require_owner = require_role("owner")
 
 router = APIRouter(prefix="/owner", tags=["Owner"])
@@ -271,7 +274,7 @@ async def get_owner_properties(
 
 # ========== Financial Tracking ==========
 
-@router.delete("/properties/{property_id}", dependencies=[Depends(require_owner)])
+@router.delete("/properties/{property_id}", response_model=PropertyDeletionResponse, dependencies=[Depends(require_owner)])
 async def delete_owner_property(
     property_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -279,37 +282,17 @@ async def delete_owner_property(
 ):
     """Delete a property owned by the current user."""
     try:
-        # Get the property
-        property_obj = db.query(Property).filter(Property.id == property_id).first()
-        
-        if not property_obj:
-            raise HTTPException(status_code=404, detail="Property not found")
-        
-        # Verify ownership
-        if property_obj.owner_id != current_user.id:
-            raise HTTPException(status_code=403, detail="You don't have permission to delete this property")
-        
-        # Check for active bookings
-        active_bookings = db.query(Booking).filter(
-            Booking.property_id == property_id,
-            Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
-        ).count()
-        
-        if active_bookings > 0:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot delete property with {active_bookings} active booking(s). Please cancel or complete all bookings first."
-            )
-        
-        # Delete the property (CASCADE will handle rooms)
-        db.delete(property_obj)
-        db.commit()
-        
-        return {"message": "Property deleted successfully"}
+        from app.services.property_service import PropertyService
+        return await PropertyService.delete_property(
+            db=db,
+            property_id=property_id,
+            current_user_id=current_user.id,
+            is_admin=False
+        )
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
+        logger.exception(f"Failed to delete owner property {property_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -29,6 +29,8 @@ from app.schemas.property import (
     RoomResponse,
     PropertyFilter,
     GenderPreferenceEnum,
+    PropertyStatusUpdateResponse,
+    PropertyDeletionResponse,
 )
 from app.schemas.booking import (
     BookingCreate,
@@ -97,6 +99,8 @@ __all__ = [
     "RoomResponse",
     "PropertyFilter",
     "GenderPreferenceEnum",
+    "PropertyStatusUpdateResponse",
+    "PropertyDeletionResponse",
     # Booking schemas
     "BookingCreate",
     "BookingStatusUpdate",

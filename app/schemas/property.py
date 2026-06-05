@@ -192,5 +192,14 @@ class PropertyFilter(BaseModel):
     sort_by: Optional[str] = "newest"  # newest, price_low, price_high
 
 
+class PropertyStatusUpdateResponse(BaseModel):
+    message: str
+    has_active_bookings: bool
+
+
+class PropertyDeletionResponse(BaseModel):
+    message: str
+
+
 # Update forward reference
 PropertyDetailResponse.model_rebuild()

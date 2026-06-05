@@ -20,6 +20,7 @@ from app.schemas import (
     RoomResponse,
     PropertyFilter,
     GenderPreferenceEnum,
+    PropertyDeletionResponse,
 )
 from app.utils.security import get_current_user, require_owner
 from app.services.vacancy import get_room_availability, get_property_availability
@@ -216,27 +217,20 @@ async def update_property(
     return property
 
 
-@router.delete("/{property_id}", dependencies=[Depends(require_owner)])
+@router.delete("/{property_id}", response_model=PropertyDeletionResponse, dependencies=[Depends(require_owner)])
 async def delete_property(
     property_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Delete a property (owner only)."""
-    property = db.query(Property).filter(
-        Property.id == property_id,
-        Property.owner_id == current_user.id
-    ).first()
-    
-    if not property:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Property not found or you don't have permission to delete it"
-        )
-    
-    db.delete(property)
-    db.commit()
-    return {"message": "Property deleted successfully"}
+    from app.services.property_service import PropertyService
+    return await PropertyService.delete_property(
+        db=db,
+        property_id=property_id,
+        current_user_id=current_user.id,
+        is_admin=False
+    )
 
 
 # Room endpoints

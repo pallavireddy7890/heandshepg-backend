@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.models import Notification, User, Profile
 import uuid
 import logging
+import asyncio
 from app.services.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ async def create_notification(
 ) -> Notification:
     """
     Create a notification for a user, broadcast via WebSocket, and optionally send via Email/SMS.
+    Runs the blocking SMTP/Twilio network operations asynchronously in worker threads.
     """
     notification = Notification(
         id=uuid.uuid4(),
@@ -56,7 +58,7 @@ async def create_notification(
     except Exception as e:
         logger.warning(f"Failed to broadcast notification: {e}")
     
-    # 2. Omnichannel Delivery (Email + SMS)
+    # 2. Omnichannel Delivery (Email + SMS) - Executed asynchronously in threads to prevent request blocking
     if send_external:
         try:
             profile = db.query(Profile).filter(Profile.user_id == user_id).first()
@@ -89,23 +91,31 @@ async def create_notification(
                     </body>
                     </html>
                     """
-                    NotificationService.send_email(
+                    # Schedule sending in a background thread to prevent API blocking
+                    asyncio.create_task(asyncio.to_thread(
+                        NotificationService.send_email,
                         to_email=user.email,
                         subject=f"He&She PG: {title}",
                         body_html=email_body,
                         body_text=f"He&She PG: {message}"
-                    )
+                    ))
                 
                 # Send SMS if enabled and phone exists
                 if profile.sms_notifications and profile.phone:
                     sms_message = f"He&She PG: {title} - {message}"
-                    # Trip long messages for SMS
+                    # Trim long messages for SMS
                     if len(sms_message) > 160:
                         sms_message = sms_message[:157] + "..."
-                    NotificationService.send_sms(profile.phone, sms_message)
+                    
+                    # Schedule sending in a background thread to prevent API blocking
+                    asyncio.create_task(asyncio.to_thread(
+                        NotificationService.send_sms,
+                        to_phone=profile.phone,
+                        message=sms_message
+                    ))
                     
         except Exception as e:
-            logger.warning(f"Failed to send external omnichannel notifications: {e}")
+            logger.warning(f"Failed to dispatch external omnichannel notifications: {e}")
         
     return notification
 
