@@ -116,7 +116,7 @@ class WalletService:
         online_completed = build_sum_query(True, [TransactionStatus.completed], TransactionType.credit)
         offline_completed = build_sum_query(False, [TransactionStatus.completed], TransactionType.credit)
         
-        online_pending = build_sum_query(True, [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
+        online_pending = build_sum_query(True, [TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
         offline_pending = build_sum_query(False, [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
         
         # Withdrawals are not associated with properties, so they are 0 if property_id is provided
@@ -187,16 +187,20 @@ class WalletService:
             amount=amount,
             transaction_type=transaction_type,
             status=TransactionStatus.pending,
+            payment_method='online',
             razorpay_payment_id=razorpay_payment_id,
             razorpay_order_id=razorpay_order_id,
             description=description,
         )
         db.add(transaction)
         
-        # Add to owner's pending_balance
+        # Add to owner's pending_balance (only if it is not a pending online transaction)
         owner_wallet = db.query(Wallet).filter(Wallet.id == wallet_id).first()
         if owner_wallet:
-            owner_wallet.pending_balance += amount
+            pay_method = transaction.payment_method or 'online'
+            is_pending_online = (pay_method == 'online' and transaction.status == TransactionStatus.pending)
+            if not is_pending_online:
+                owner_wallet.pending_balance += amount
         
         db.commit()
         db.refresh(transaction)
@@ -269,6 +273,11 @@ class WalletService:
         # Get transaction and update status
         transaction = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
         if transaction:
+            # Add online transaction amount to owner's pending_balance when transitioning from pending to otp_sent
+            if transaction.status == TransactionStatus.pending and transaction.payment_method == 'online':
+                owner_wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
+                if owner_wallet:
+                    owner_wallet.pending_balance += transaction.amount
             transaction.status = TransactionStatus.otp_sent
         
         db.commit()
@@ -348,6 +357,11 @@ class WalletService:
         # Get transaction and update status
         transaction = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
         if transaction:
+            # Add online transaction amount to owner's pending_balance when transitioning from pending to otp_sent
+            if transaction.status == TransactionStatus.pending and transaction.payment_method == 'online':
+                owner_wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
+                if owner_wallet:
+                    owner_wallet.pending_balance += transaction.amount
             transaction.status = TransactionStatus.otp_sent
         
         db.commit()
@@ -492,6 +506,15 @@ class WalletService:
                 (WalletTransaction.payer_id == user_id) |
                 (WalletTransaction.receiver_id == user_id)
             )
+        
+        from sqlalchemy import or_
+        # Exclude unpaid/pending online transactions from history
+        query = query.filter(
+            or_(
+                WalletTransaction.payment_method != 'online',
+                WalletTransaction.status != TransactionStatus.pending
+            )
+        )
         
         if property_id:
             from app.models import Booking

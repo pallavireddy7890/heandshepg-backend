@@ -122,10 +122,16 @@ async def get_my_pending_payments(
     db: Session = Depends(get_db),
 ):
     """Get customer's pending payments that need OTP verification by owner."""
-    # Get transactions where current user is the payer and OTP not verified
+    from sqlalchemy import or_, and_
+    # Get transactions where current user is the payer, OTP not verified,
+    # and either it's online and paid/ready (otp_sent) or it's offline and pending verification
     transactions = db.query(WalletTransaction).filter(
         WalletTransaction.payer_id == current_user.id,
-        WalletTransaction.otp_verified == False
+        WalletTransaction.otp_verified == False,
+        or_(
+            and_(WalletTransaction.payment_method == 'online', WalletTransaction.status == TransactionStatus.otp_sent),
+            and_(WalletTransaction.payment_method != 'online', WalletTransaction.status == TransactionStatus.pending)
+        )
     ).order_by(WalletTransaction.created_at.desc()).all()
     
     result = []
@@ -167,12 +173,15 @@ async def get_owner_pending_payments(
     db: Session = Depends(get_db),
 ):
     """Get owner's pending payments (offline or online awaiting OTP)."""
-    # Get transactions where current user is the receiver and not completed
+    from sqlalchemy import or_, and_
+    # Get transactions where current user is the receiver, and either it's online and paid/ready (otp_sent)
+    # or it's offline and pending verification
     transactions = db.query(WalletTransaction).filter(
         WalletTransaction.receiver_id == current_user.id,
-        WalletTransaction.status != TransactionStatus.completed,
-        WalletTransaction.status != TransactionStatus.failed,
-        WalletTransaction.status != TransactionStatus.rejected
+        or_(
+            and_(WalletTransaction.payment_method == 'online', WalletTransaction.status == TransactionStatus.otp_sent),
+            and_(WalletTransaction.payment_method != 'online', WalletTransaction.status == TransactionStatus.pending)
+        )
     ).order_by(WalletTransaction.created_at.desc()).all()
     
     result = []
@@ -242,10 +251,15 @@ async def initiate_wallet_payment(
         WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent])
     ).first()
     if existing_txn:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
-        )
+        # If it's a pending online transaction (initiated but not paid), we can delete it and retry
+        if existing_txn.payment_method == 'online' and existing_txn.status == TransactionStatus.pending:
+            db.delete(existing_txn)
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
+            )
     
     # Check for vacancy before allowing payment initiation
     if booking.room_id:
@@ -391,10 +405,15 @@ async def initiate_offline_wallet_payment(
         WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent])
     ).first()
     if existing_txn:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
-        )
+        # If it's a pending online transaction (initiated but not paid), we can delete it so they can pay offline
+        if existing_txn.payment_method == 'online' and existing_txn.status == TransactionStatus.pending:
+            db.delete(existing_txn)
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
+            )
     
     # Get owner's wallet
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
@@ -538,6 +557,13 @@ async def verify_transaction_otp(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the recipient (property owner) can verify this OTP"
+        )
+    
+    # Safety Check: For online payments, ensure the transaction has been paid/verified (status is otp_sent)
+    if transaction.payment_method == 'online' and transaction.status != TransactionStatus.otp_sent:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot verify OTP for an unpaid online transaction"
         )
     
     # Verify OTP
@@ -822,6 +848,19 @@ async def resend_transaction_otp(
             detail="Transaction already completed"
         )
     
+    # Only allow regenerating OTP if transaction is online AND status is otp_sent
+    if transaction.payment_method != 'online':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OTP verification is not applicable for offline payments"
+        )
+        
+    if transaction.status != TransactionStatus.otp_sent:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot generate OTP for an unpaid online transaction"
+        )
+    
     # Get owner profile
     owner_profile = db.query(Profile).filter(Profile.user_id == transaction.receiver_id).first()
     
@@ -906,7 +945,9 @@ async def delete_transaction(
     if wallet:
         if transaction.status == TransactionStatus.completed:
             wallet.balance = max(0, wallet.balance - transaction.amount)
-        elif transaction.status in [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified]:
+        # Only deduct from pending_balance if the transaction was actually added to pending_balance
+        # (online transactions are added when status is otp_sent or verified; offline transactions when status is pending)
+        elif transaction.status in [TransactionStatus.otp_sent, TransactionStatus.verified] or (transaction.payment_method != 'online' and transaction.status == TransactionStatus.pending):
             wallet.pending_balance = max(0, wallet.pending_balance - transaction.amount)
             
     # Update booking status if necessary (might be complex to fully revert rent_paid, but let's at least clear relevant flags)
