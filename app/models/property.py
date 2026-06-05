@@ -80,6 +80,7 @@ class Room(Base):
     daily_price_with_food = Column(Integer)  # Daily price including food
     daily_price_without_food = Column(Integer)  # Daily price without food
     maintenance_charge = Column(Integer, default=0)  # Maintenance charge per room
+    refundable_amount = Column(Integer, default=0)  # Refundable amount for the room
     vacancy_count = Column(Integer, default=0)
     is_available = Column(Boolean, default=True)
     stay_type = Column(String(20), default="monthly")  # 'monthly' or 'daily'

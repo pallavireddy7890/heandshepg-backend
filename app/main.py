@@ -45,8 +45,36 @@ from app.routers.upload_photos import router as upload_photos_router
 # =========================
 settings = get_settings()
 
-log_level = logging.DEBUG if settings.debug else logging.INFO
-logging.basicConfig(level=log_level)
+# Define and register custom TRACE level (value 5)
+logging.TRACE = 5
+logging.addLevelName(logging.TRACE, "TRACE")
+def trace(self, message, *args, **kws):
+    if self.isEnabledFor(logging.TRACE):
+        self._log(logging.TRACE, message, args, **kws)
+logging.Logger.trace = trace
+
+# Map string log level to standard logging levels
+log_level_str = settings.log_level.upper().strip()
+log_level_map = {
+    "TRACE": logging.TRACE,
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARN": logging.WARNING,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "FATAL": logging.CRITICAL,
+    "CRITICAL": logging.CRITICAL,
+}
+log_level = log_level_map.get(log_level_str, logging.INFO)
+
+# Override with debug setting if set to True and log_level is less detailed
+if settings.debug and log_level > logging.DEBUG:
+    log_level = logging.DEBUG
+
+logging.basicConfig(
+    level=log_level,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("heandshepg")
 
 # =========================

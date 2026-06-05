@@ -98,9 +98,10 @@ class WithdrawRequest(BaseModel):
 async def get_wallet_balance(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    property_id: Optional[UUID] = None,
 ):
     """Get current user's wallet balance."""
-    balance = WalletService.get_balance(db, current_user.id)
+    balance = WalletService.get_balance(db, current_user.id, property_id)
     return WalletBalanceResponse(**balance)
 
 
@@ -109,9 +110,10 @@ async def get_transaction_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = 50,
+    property_id: Optional[UUID] = None,
 ):
     """Get transaction history for current user."""
-    return WalletService.get_transactions(db, current_user.id, limit)
+    return WalletService.get_transactions(db, current_user.id, limit, property_id)
 
 
 @router.get("/my-pending-payments")
