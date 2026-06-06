@@ -292,6 +292,7 @@ async def delete_owner_property(
     except HTTPException:
         raise
     except Exception as e:
+        db.rollback()
         logger.exception(f"Failed to delete owner property {property_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
