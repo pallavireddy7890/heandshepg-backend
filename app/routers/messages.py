@@ -34,6 +34,7 @@ async def get_conversation(
     return MessageService.get_conversation(db, conversation_id, current_user)
 
 
+@router.post("/send", response_model=MessageResponse, include_in_schema=False)
 @router.post("", response_model=MessageResponse)
 async def send_message(
     message_data: MessageCreate,
