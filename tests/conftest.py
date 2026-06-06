@@ -25,6 +25,20 @@ from app.main import app
 from app.database import Base, get_db
 from app.models import User, Profile, UserRole, AppRole
 from app.utils.security import create_access_token, get_password_hash
+from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
+
+def visit_UUID(self, type_, **kw):
+    return "VARCHAR(36)"
+
+def visit_ARRAY(self, type_, **kw):
+    return "TEXT"
+
+def visit_JSONB(self, type_, **kw):
+    return "JSON"
+
+SQLiteTypeCompiler.visit_UUID = visit_UUID
+SQLiteTypeCompiler.visit_ARRAY = visit_ARRAY
+SQLiteTypeCompiler.visit_JSONB = visit_JSONB
 
 
 # Test database - use SQLite in memory for speed
@@ -122,15 +136,9 @@ def created_user(db: Session) -> User:
     db.add(profile)
     
     # Create customer role
-    customer_role = db.query(AppRole).filter(AppRole.name == "customer").first()
-    if not customer_role:
-        customer_role = AppRole(name="customer")
-        db.add(customer_role)
-        db.commit()
-    
     user_role = UserRole(
         user_id=user.id,
-        role=customer_role.name
+        role=AppRole.customer
     )
     db.add(user_role)
     db.commit()
@@ -167,15 +175,9 @@ def admin_user(db: Session) -> User:
     db.add(profile)
     
     # Create admin role
-    admin_role = db.query(AppRole).filter(AppRole.name == "admin").first()
-    if not admin_role:
-        admin_role = AppRole(name="admin")
-        db.add(admin_role)
-        db.commit()
-    
     user_role = UserRole(
         user_id=user.id,
-        role=admin_role.name
+        role=AppRole.admin
     )
     db.add(user_role)
     db.commit()

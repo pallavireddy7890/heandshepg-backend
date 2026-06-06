@@ -48,6 +48,15 @@ class PasswordReset(BaseModel):
     email: EmailStr
 
 
+class ForgotPasswordPhoneRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$")
+
+
+class VerifyPasswordResetOTPRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$")
+    otp_code: str = Field(..., min_length=6, max_length=6)
+
+
 class PasswordResetConfirm(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)

@@ -11,6 +11,7 @@ from app.models.city import City, Area
 from app.models.notification_log import NotificationLog
 from app.models.wallet import Wallet, WalletTransaction, TransactionOTP, TransactionType, TransactionStatus
 from app.models.email_verification import EmailVerification
+from app.models.password_reset_otp import PasswordResetOTP
 from app.models.announcement import Announcement, AnnouncementPriority
 from app.models.maintenance import Ticket, TicketPriority, TicketStatus
 from app.models.vacation import Vacation, VacationStatus
@@ -24,6 +25,7 @@ __all__ = [
     "OwnersProfile",
     "AppRole",
     "KycStatus",
+    "PasswordResetOTP",
     # Property models
     "Property",
     "Room",
