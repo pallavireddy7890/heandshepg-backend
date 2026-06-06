@@ -28,8 +28,7 @@ class MessageService:
                 other_profile = ProfileRepository.get_profile_by_user_id(db, other_user_id)
                 
                 # Get last message
-                messages = MessageRepository.get_messages_by_conversation_id(db, conv.id)
-                last_message = messages[-1] if messages else None
+                last_message = db.query(Message).filter(Message.conversation_id == conv.id).order_by(Message.created_at.desc()).first()
                 
                 conv_dict = {
                     "id": conv.id,
@@ -137,7 +136,7 @@ class MessageService:
                 db=db,
                 conversation_id=conversation.id,
                 from_user=current_user.id,
-                to_user=message_data.to_user,
+                to_user=message_data.to_user if current_user.id == property_obj.owner_id else owner_id,
                 content=message_data.content
             )
             

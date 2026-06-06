@@ -23,6 +23,7 @@ async def list_conversations(
     return MessageService.list_conversations(db, current_user)
 
 
+@router.get("/conversations/{conversation_id}", response_model=ConversationWithMessages, include_in_schema=False)
 @router.get("/conversation/{conversation_id}", response_model=ConversationWithMessages)
 async def get_conversation(
     conversation_id: UUID,
