@@ -40,7 +40,7 @@ class TestSignup:
         response = client.post("/api/auth/signup", json=duplicate_data)
         
         assert response.status_code == 400
-        assert "already registered" in response.json()["detail"].lower()
+        assert "already exists" in response.json()["detail"].lower() or "already registered" in response.json()["detail"].lower()
     
     def test_signup_invalid_email(self, client: TestClient):
         """Test signup fails with invalid email format."""

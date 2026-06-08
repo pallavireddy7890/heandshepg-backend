@@ -471,7 +471,7 @@ async def get_all_properties_for_moderation(
     """Get all properties for moderation (admin only)."""
     from app.models import Property
     
-    query = db.query(Property)
+    query = db.query(Property).filter(Property.inactive_at.is_(None))
     
     if status_filter:
         query = query.filter(Property.status == status_filter)

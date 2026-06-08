@@ -188,11 +188,102 @@ async def get_owner_properties(
     try:
         today = date.today()
         properties = db.query(Property).filter(
-            Property.owner_id == current_user.id
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
         ).order_by(Property.created_at.desc()).all()
+        
+        property_ids = [p.id for p in properties]
+        
+        # Bulk query bookings for these properties in one go
+        all_bookings = db.query(Booking).filter(
+            Booking.property_id.in_(property_ids),
+            Booking.status.in_([
+                BookingStatus.active, 
+                BookingStatus.paid, 
+                BookingStatus.checked_in, 
+                BookingStatus.vacate_requested,
+                BookingStatus.accepted,
+                BookingStatus.requested
+            ])
+        ).all() if property_ids else []
+        
+        # Group bookings by room_id
+        from collections import defaultdict
+        bookings_by_room = defaultdict(list)
+        for b in all_bookings:
+            if b.room_id:
+                bookings_by_room[b.room_id].append(b)
+                
+        # Collect customer IDs to bulk-query users and profiles
+        customer_ids = {b.customer_id for b in all_bookings}
+        profiles = db.query(Profile).filter(Profile.user_id.in_(customer_ids)).all() if customer_ids else []
+        users = db.query(User).filter(User.id.in_(customer_ids)).all() if customer_ids else []
+        
+        profile_map = {p.user_id: p for p in profiles}
+        user_map = {u.id: u for u in users}
         
         result = []
         for prop in properties:
+            rooms_list = []
+            for r in prop.rooms:
+                room_bookings = bookings_by_room.get(r.id, [])
+                
+                # Filter for occupied bookings (actually in beds)
+                occupied_bookings = [
+                    b for b in room_bookings 
+                    if b.status in [BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested]
+                ]
+                vacancy_count = max(0, r.bed_count - len(occupied_bookings))
+                is_available = vacancy_count > 0
+                
+                # Tenants list
+                tenants_list = []
+                for b in room_bookings:
+                    profile = profile_map.get(b.customer_id)
+                    user = user_map.get(b.customer_id)
+                    
+                    email = user.email if user else ""
+                    name = (profile.name if profile else None) or email or "Tenant"
+                    phone = profile.phone if profile else None
+                    
+                    tenants_list.append({
+                        "booking_id": str(b.id),
+                        "name": name,
+                        "email": email,
+                        "phone": phone,
+                        "start_date": b.start_date.isoformat() if b.start_date else None,
+                        "room_id": str(r.id),
+                        "status": calculate_month_rent_stats(
+                            db, b, date.today().month, date.today().year
+                        )["status"]
+                    })
+                
+                rooms_list.append({
+                    "id": str(r.id),
+                    "room_type": r.room_type,
+                    "room_number": r.room_number,
+                    "floor_number": r.floor_number if r.floor_number is not None else 1,
+                    "bed_count": r.bed_count,
+                    "price": r.price,
+                    "monthly_price": r.monthly_price,
+                    "daily_price": r.daily_price,
+                    "daily_price_with_food": r.daily_price_with_food,
+                    "daily_price_without_food": r.daily_price_without_food,
+                    "deposit": r.deposit,
+                    "security_deposit": r.security_deposit,
+                    "maintenance_charge": r.maintenance_charge,
+                    "status_month": today.strftime('%B %Y'),
+                    "vacancy_count": vacancy_count,
+                    "is_available": is_available,
+                    "stay_type": r.stay_type,
+                    "room_photos": r.room_photos or [],
+                    "room_description": r.room_description,
+                    "area_sqft": r.area_sqft,
+                    "width_ft": r.width_ft,
+                    "has_ventilation": r.has_ventilation,
+                    "tenants": tenants_list,
+                })
+                
             result.append({
                 "id": str(prop.id),
                 "title": prop.title,
@@ -209,62 +300,7 @@ async def get_owner_properties(
                 "status": prop.status,
                 "available_from": prop.available_from.isoformat() if prop.available_from else None,
                 "created_at": prop.created_at.isoformat() if prop.created_at else None,
-                "rooms": [{
-                    "id": str(r.id),
-                    "room_type": r.room_type,
-                    "room_number": r.room_number,
-                    "floor_number": r.floor_number if r.floor_number is not None else 1,
-                    "bed_count": r.bed_count,
-                    "price": r.price,
-                    "monthly_price": r.monthly_price,
-                    "daily_price": r.daily_price,
-                    "daily_price_with_food": r.daily_price_with_food,
-                    "daily_price_without_food": r.daily_price_without_food,
-                    "deposit": r.deposit,
-                    "security_deposit": r.security_deposit,
-                    "maintenance_charge": r.maintenance_charge,
-                    "status_month": today.strftime('%B %Y'),
-                    "vacancy_count": r.bed_count - len([
-                        b for b in db.query(Booking).filter(
-                            Booking.room_id == r.id,
-                            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
-                        ).all()
-                    ]),
-                    "is_available": (r.bed_count - len([
-                        b for b in db.query(Booking).filter(
-                            Booking.room_id == r.id,
-                            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
-                        ).all()
-                    ])) > 0,
-                    "stay_type": r.stay_type,
-                    "room_photos": r.room_photos or [],
-                    "room_description": r.room_description,
-                    "area_sqft": r.area_sqft,
-                    "width_ft": r.width_ft,
-                    "has_ventilation": r.has_ventilation,
-                    "tenants": [{
-                        "booking_id": str(b.id),
-                        "name": (db.query(Profile).filter(Profile.user_id == b.customer_id).first().name if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None) or (db.query(User).filter(User.id == b.customer_id).first().email if db.query(User).filter(User.id == b.customer_id).first() else "Tenant"),
-                        "email": db.query(User).filter(User.id == b.customer_id).first().email if db.query(User).filter(User.id == b.customer_id).first() else "",
-                        "phone": db.query(Profile).filter(Profile.user_id == b.customer_id).first().phone if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None,
-                        "start_date": b.start_date.isoformat() if b.start_date else None,
-                        "room_id": str(r.id),
-                        "status": calculate_month_rent_stats(
-                            db, b, date.today().month, date.today().year
-                        )["status"]
-                    } for b in db.query(Booking).filter(
-                        Booking.room_id == r.id,
-                        # Filter by business logic - active or soon-to-be active tenants
-                        Booking.status.in_([
-                            BookingStatus.active, 
-                            BookingStatus.paid, 
-                            BookingStatus.checked_in, 
-                            BookingStatus.vacate_requested,
-                            BookingStatus.accepted,
-                            BookingStatus.requested
-                        ])
-                    ).all()],
-                } for r in prop.rooms]
+                "rooms": rooms_list,
             })
         
         return result
@@ -422,7 +458,10 @@ async def get_financial_summary(
     """Get financial summary for owner."""
     try:
         # Get owner's properties
-        owner_properties = db.query(Property).filter(Property.owner_id == current_user.id).all()
+        owner_properties = db.query(Property).filter(
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
+        ).all()
         property_ids = [p.id for p in owner_properties]
         
         total_properties = len(owner_properties)
@@ -705,7 +744,10 @@ async def get_owner_tenants(
     """Get all tenants for owner's properties."""
     try:
         # Get owner's properties
-        properties_query = db.query(Property).filter(Property.owner_id == current_user.id)
+        properties_query = db.query(Property).filter(
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
+        )
         
         if property_id:
             properties_query = properties_query.filter(Property.id == property_id)
@@ -794,7 +836,10 @@ async def verify_tenant_profile(
             raise HTTPException(status_code=400, detail="Invalid status. Must be 'approved', 'rejected', or 'pending'")
         
         # Get owner's properties
-        owner_properties = db.query(Property).filter(Property.owner_id == current_user.id).all()
+        owner_properties = db.query(Property).filter(
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
+        ).all()
         property_ids = [p.id for p in owner_properties]
         
         if not property_ids:
@@ -1160,10 +1205,11 @@ async def owner_global_search(
         # 1. Search Properties
         properties = db.query(Property).filter(
             Property.owner_id == current_user.id,
-            (Property.title.ilike(f"%{q}%")) | 
-            (Property.locality.ilike(f"%{q}%")) | 
-            (Property.city.ilike(f"%{q}%")) |
-            (Property.address.ilike(f"%{q}%"))
+            Property.inactive_at.is_(None),
+            ((Property.title.ilike(f"%{q}%")) | 
+             (Property.locality.ilike(f"%{q}%")) | 
+             (Property.city.ilike(f"%{q}%")) |
+             (Property.address.ilike(f"%{q}%")))
         ).limit(10).all()
 
         # 2. Search Tenants (via bookings related to owner properties)

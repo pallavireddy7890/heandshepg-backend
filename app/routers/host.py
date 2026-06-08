@@ -31,7 +31,8 @@ async def get_host_profile(
     # Get host properties count
     properties_count = db.query(Property).filter(
         Property.owner_id == host_id,
-        Property.status == "active"
+        Property.status == "active",
+        Property.inactive_at.is_(None)
     ).count()
     
     # Calculate stats
@@ -40,7 +41,8 @@ async def get_host_profile(
     
     # Get first property for fallback calculations
     first_property = db.query(Property).filter(
-        Property.owner_id == host_id
+        Property.owner_id == host_id,
+        Property.inactive_at.is_(None)
     ).order_by(Property.created_at.asc()).first()
     
     # First check if profile has hosting_since date set
@@ -242,7 +244,8 @@ async def get_host_properties(
         joinedload(Property.rooms)
     ).filter(
         Property.owner_id == host_id,
-        Property.status == "active"
+        Property.status == "active",
+        Property.inactive_at.is_(None)
     ).offset(skip).limit(limit).all()
     
     result = []

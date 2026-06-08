@@ -24,7 +24,10 @@ async def list_favorites(
         
         result = []
         for fav in favorites:
-            property_obj = db.query(Property).filter(Property.id == fav.property_id).first()
+            property_obj = db.query(Property).filter(
+                Property.id == fav.property_id,
+                Property.inactive_at.is_(None)
+            ).first()
             fav_dict = {
                 "id": str(fav.id),
                 "user_id": str(fav.user_id),
@@ -54,8 +57,9 @@ async def list_favorite_ids(
     db: Session = Depends(get_db)
 ):
     """Get list of favorited property IDs (for quick lookup)."""
-    favorites = db.query(Favorite.property_id).filter(
-        Favorite.user_id == current_user.id
+    favorites = db.query(Favorite.property_id).join(Property).filter(
+        Favorite.user_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).all()
     return [str(f.property_id) for f in favorites]
 
@@ -68,7 +72,10 @@ async def add_favorite(
 ):
     """Add a property to favorites."""
     # Check if property exists
-    property = db.query(Property).filter(Property.id == property_id).first()
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.inactive_at.is_(None)
+    ).first()
     if not property:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -126,7 +133,10 @@ async def toggle_favorite(
 ):
     """Toggle favorite status for a property."""
     # Check if property exists
-    property = db.query(Property).filter(Property.id == property_id).first()
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.inactive_at.is_(None)
+    ).first()
     if not property:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

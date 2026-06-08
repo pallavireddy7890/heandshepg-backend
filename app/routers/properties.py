@@ -43,7 +43,10 @@ async def list_properties(
 ):
     """List properties with optional filters."""
     from sqlalchemy.orm import joinedload
-    query = db.query(Property).options(joinedload(Property.rooms)).filter(Property.status == "active")
+    query = db.query(Property).options(joinedload(Property.rooms)).filter(
+        Property.status == "active",
+        Property.inactive_at.is_(None)
+    )
     
     if city:
         query = query.filter(Property.city.ilike(f"%{city}%"))
@@ -80,11 +83,36 @@ async def search_properties(
 ):
     """Global search for properties (customer-facing)."""
     from sqlalchemy.orm import joinedload
+    import re
+    
+    # Check if user query implies a specific bed configuration
+    t = q.lower().strip()
+    beds = None
+    if "single" in t or t == "1" or "1 sharing" in t or "1-sharing" in t:
+        beds = 1
+    elif "double" in t or t == "2" or "2 sharing" in t or "2-sharing" in t:
+        beds = 2
+    elif "triple" in t or t == "3" or "3 sharing" in t or "3-sharing" in t:
+        beds = 3
+    elif "four" in t or t == "4" or "4 sharing" in t or "4-sharing" in t:
+        beds = 4
+    else:
+        match = re.search(r"(\d+)\s*sharing", t)
+        if match:
+            beds = int(match.group(1))
+
+    # Construct room filters
+    room_filter = Room.room_type.ilike(f"%{q}%")
+    if beds is not None:
+        room_filter = room_filter | (Room.bed_count == beds)
+
     query = db.query(Property).options(joinedload(Property.rooms)).filter(
-        (Property.status == "active"),
+        Property.status == "active",
+        Property.inactive_at.is_(None),
         (Property.title.ilike(f"%{q}%") | 
          Property.city.ilike(f"%{q}%") | 
-         Property.locality.ilike(f"%{q}%"))
+         Property.locality.ilike(f"%{q}%") |
+         Property.rooms.any(room_filter))
     )
     return query.limit(limit).all()
 
@@ -95,7 +123,10 @@ async def get_property(
     db: Session = Depends(get_db)
 ):
     """Get property details by ID."""
-    property = db.query(Property).filter(Property.id == property_id).first()
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.inactive_at.is_(None)
+    ).first()
     if not property:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -151,7 +182,10 @@ async def create_property(
         except ValueError:
             pass
 
-    existing_count = db.query(Property).filter(Property.owner_id == current_user.id).count()
+    existing_count = db.query(Property).filter(
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
+    ).count()
     if existing_count >= max_limit:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -193,7 +227,8 @@ async def update_property(
     """Update a property (owner only)."""
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
@@ -293,7 +328,8 @@ async def create_room(
     """Add a room to a property (owner only)."""
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
@@ -324,7 +360,8 @@ async def update_room(
     # Verify ownership
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
@@ -368,7 +405,8 @@ async def delete_room(
     # Verify ownership
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
