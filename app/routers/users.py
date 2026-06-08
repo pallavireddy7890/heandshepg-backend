@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import User, Profile, Notification
-from app.schemas import ProfileUpdate, ProfileResponse, NotificationResponse
+from app.schemas import ProfileUpdate, ProfileResponse, NotificationResponse, SendPhoneOTPRequest, VerifyPhoneOTPRequest
 from app.utils.security import get_current_user
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -356,5 +356,235 @@ async def upload_document(
         "filename": unique_filename,
         "document_type": document_type
     }
+
+
+@router.post("/send-phone-otp")
+async def send_phone_otp(
+    data: SendPhoneOTPRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Send OTP for profile phone verification.
+    """
+    from app.routers.auth import normalize_phone, phone_variants
+    from app.services.email_verification_service import EmailVerificationService
+    from app.services.notification_service import NotificationService
+    from app.models.phone_verification_otp import PhoneVerificationOTP
+    
+    phone_clean = normalize_phone(data.phone)
+    if not phone_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid phone number"
+        )
+        
+    # Check if another verified user already has this phone number.
+    variants = phone_variants(phone_clean)
+    existing_profile = db.query(Profile).filter(
+        Profile.phone.in_(variants),
+        Profile.user_id != current_user.id
+    ).first()
+    if existing_profile:
+        profile_owner = db.query(User).filter(User.id == existing_profile.user_id).first()
+        if profile_owner and profile_owner.is_verified:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number is already registered to another account."
+            )
+            
+    # Delete old verification OTPs for this phone number
+    db.query(PhoneVerificationOTP).filter(
+        PhoneVerificationOTP.phone == phone_clean,
+        PhoneVerificationOTP.is_verified == False
+    ).delete()
+    db.commit()
+    
+    # Generate 6-digit OTP
+    otp_code = EmailVerificationService.generate_otp()
+    
+    # Create OTP record
+    db_otp = PhoneVerificationOTP(
+        phone=phone_clean,
+        otp_code=otp_code,
+        expires_at=PhoneVerificationOTP.get_expiry_time()
+    )
+    db.add(db_otp)
+    db.commit()
+    
+    # Send OTP SMS
+    message = f"He&She PG: Your phone verification code is {otp_code}. Valid for 10 minutes."
+    sms_sent, sms_error = NotificationService.send_sms(phone_clean, message)
+    
+    # Local debugging bypass log
+    if not sms_sent:
+        from datetime import datetime
+        log_msg = f"\n[{datetime.utcnow()}] --- LOCAL BYPASS: PHONE VERIFICATION OTP READY ---\n"
+        log_msg += f"Phone: {phone_clean}\nOTP: {otp_code}\n"
+        log_msg += f"SMS Error: {sms_error or 'Twilio not configured'}\n"
+        log_msg += "---------------------------------------\n"
+        try:
+            import os
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/sms_debug.log", "a") as f:
+                f.write(log_msg)
+        except Exception:
+            pass
+        print(log_msg)
+        
+    return {
+        "message": "Verification OTP sent to your phone number",
+        "phone": phone_clean,
+        "expires_in_minutes": PhoneVerificationOTP.OTP_EXPIRY_MINUTES
+    }
+
+
+@router.post("/verify-phone-otp")
+async def verify_phone_otp(
+    data: VerifyPhoneOTPRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Verify the phone OTP and update user profile's phone number to verified.
+    """
+    from app.routers.auth import normalize_phone
+    from app.models.phone_verification_otp import PhoneVerificationOTP
+    
+    phone_clean = normalize_phone(data.phone)
+    if not phone_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid phone number"
+        )
+        
+    # Find active verification record
+    verification = db.query(PhoneVerificationOTP).filter(
+        PhoneVerificationOTP.phone == phone_clean,
+        PhoneVerificationOTP.is_verified == False
+    ).order_by(PhoneVerificationOTP.created_at.desc()).first()
+    
+    if not verification:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No pending verification request found for this phone number."
+        )
+        
+    # Check if expired
+    if verification.is_expired():
+        db.delete(verification)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The verification code has expired. Please request a new code."
+        )
+        
+    # Check max attempts
+    if verification.has_max_attempts():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Too many incorrect attempts. Please request a new code."
+        )
+        
+    # Compare OTP code
+    if verification.otp_code != data.otp_code:
+        verification.increment_attempts()
+        db.commit()
+        remaining = PhoneVerificationOTP.MAX_ATTEMPTS - verification.attempts
+        if remaining > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Incorrect code. You have {remaining} attempts remaining."
+            )
+        else:
+            db.delete(verification)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Too many incorrect attempts. Please request a new code."
+            )
+            
+    # Success: Mark OTP as verified
+    verification.is_verified = True
+    
+    # Update profile phone and mark as verified!
+    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    if profile:
+        profile.phone = phone_clean
+        profile.phone_verified = True
+        db.commit()
+        db.refresh(profile)
+    else:
+        # Create profile if not exists (fallback)
+        profile = Profile(
+            user_id=current_user.id,
+            phone=phone_clean,
+            phone_verified=True,
+            name=current_user.email.split('@')[0]
+        )
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+        
+    # Remove verification record
+    db.delete(verification)
+    db.commit()
+    
+    # Convert profile to dict for response
+    profile_dict = {
+        "id": str(profile.id),
+        "user_id": str(profile.user_id),
+        "name": profile.name,
+        "display_name": profile.display_name,
+        "business_name": profile.business_name,
+        "about": profile.about,
+        "phone": profile.phone,
+        "phone_verified": profile.phone_verified,
+        "email": profile.email,
+        "profile_photo": profile.profile_photo,
+        "address": profile.address,
+        "current_address": profile.current_address,
+        "permanent_address": profile.permanent_address,
+        "city": profile.city,
+        "gender": profile.gender,
+        "date_of_birth": profile.date_of_birth,
+        "work_type": profile.work_type,
+        "work_place": profile.work_place,
+        "mother_tongue": profile.mother_tongue,
+        "languages_known": profile.languages_known,
+        "emergency_contact_name": profile.emergency_contact_name,
+        "emergency_contact_phone": profile.emergency_contact_phone,
+        "emergency_contact_address": profile.emergency_contact_address,
+        "payment_reminders_enabled": profile.payment_reminders_enabled,
+        "rent_reminder_day": profile.rent_reminder_day,
+        "rent_reminder_days_before": profile.rent_reminder_days_before,
+        "rent_due_day": profile.rent_due_day,
+        "rent_reminder_message": profile.rent_reminder_message,
+        "maintenance_reminders_enabled": profile.maintenance_reminders_enabled,
+        "email_notifications": profile.email_notifications,
+        "sms_notifications": profile.sms_notifications,
+        "push_notifications": profile.push_notifications,
+        "hide_contact_info": profile.hide_contact_info,
+        "bank_account_number": profile.bank_account_number,
+        "bank_ifsc_code": profile.bank_ifsc_code,
+        "bank_name": profile.bank_name,
+        "pan_card_url": profile.pan_card_url,
+        "gst_doc_url": profile.gst_doc_url,
+        "aadhar_front_url": profile.aadhar_front_url,
+        "aadhar_back_url": profile.aadhar_back_url,
+        "dl_front_url": profile.dl_front_url,
+        "dl_back_url": profile.dl_back_url,
+        "college_company_id_url": profile.college_company_id_url,
+        "profile_verification_status": profile.profile_verification_status,
+        "hosting_since": profile.hosting_since.isoformat() if profile.hosting_since else None,
+        "created_at": profile.created_at.isoformat() if profile.created_at else None,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+    }
+    
+    return {
+        "message": "Phone number verified and updated successfully",
+        "profile": profile_dict
+    }
+
 
 
