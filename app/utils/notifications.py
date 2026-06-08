@@ -170,22 +170,32 @@ async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_
     )
 
 
-async def notify_payment_received(db: Session, owner_id: uuid.UUID, amount: float, customer_name: str, property_title: str = None):
+async def notify_payment_received(
+    db: Session, 
+    owner_id: uuid.UUID, 
+    amount: float, 
+    customer_name: str, 
+    property_title: str = None,
+    transaction_id: uuid.UUID = None
+):
     """Notify owner when a payment is received."""
     msg = f"Payment of ₹{amount:,.0f} received from {customer_name}"
     if property_title:
         msg += f" for {property_title}"
     msg += ". Please verify the OTP to complete the transaction."
     
+    link = "/owner/wallet"
+    if transaction_id:
+        link = f"/owner/wallet?transaction_id={transaction_id}"
+        
     return await create_notification(
         db=db,
         user_id=owner_id,
         title="💰 Payment Received",
         message=msg,
         notification_type="payment",
-        link="/owner/wallet"
+        link=link
     )
-
 
 async def notify_payment_verified(db: Session, customer_id: uuid.UUID, amount: float, property_title: str):
     """Notify customer when their payment is verified."""

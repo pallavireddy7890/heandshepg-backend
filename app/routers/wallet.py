@@ -518,9 +518,25 @@ async def verify_razorpay_payment(
     
     # Notify owner about incoming payment (optional - won't fail if notification fails)
     try:
-        await notify_payment_received(db, transaction.receiver_id, transaction.amount / 100, customer_name)
-    except Exception:
-        pass  # Don't fail payment if notification fails
+        from app.models import Booking, Property
+        property_title = None
+        if transaction.booking_id:
+            booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
+            if booking:
+                prop = db.query(Property).filter(Property.id == booking.property_id).first()
+                if prop:
+                    property_title = prop.title
+        await notify_payment_received(
+            db=db,
+            owner_id=transaction.receiver_id,
+            amount=transaction.amount / 100,
+            customer_name=customer_name,
+            property_title=property_title,
+            transaction_id=transaction.id
+        )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send notify_payment_received: {e}")
     
     return {
         "success": True,
@@ -974,6 +990,50 @@ async def delete_transaction(
             # SYNC VACANCY
             if booking.room_id:
                 sync_room_vacancy(db, booking.room_id)
+
+    # Delete the stale "Payment Received" notification(s) associated with this transaction
+    try:
+        from app.models import Notification
+        db.query(Notification).filter(
+            Notification.user_id == transaction.receiver_id,
+            Notification.link.like(f"%{transaction_id}%")
+        ).delete(synchronize_session=False)
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to delete stale payment notification: {e}")
+
+    # Notify owner of the cancellation if the tenant cancelled it
+    if str(transaction.payer_id) == str(current_user.id) and transaction.status != TransactionStatus.completed:
+        try:
+            from app.models import Profile, Property, Booking
+            customer_profile = db.query(Profile).filter(Profile.user_id == transaction.payer_id).first()
+            customer_name = customer_profile.name if customer_profile else "Customer"
+            
+            property_title = None
+            if transaction.booking_id:
+                booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
+                if booking:
+                    prop = db.query(Property).filter(Property.id == booking.property_id).first()
+                    if prop:
+                        property_title = prop.title
+            
+            from app.utils.notifications import create_notification
+            msg = f"{customer_name} has cancelled their payment of ₹{transaction.amount / 100:,.0f}"
+            if property_title:
+                msg += f" for {property_title}"
+            msg += "."
+            
+            await create_notification(
+                db=db,
+                user_id=transaction.receiver_id,
+                title="❌ Payment Cancelled",
+                message=msg,
+                notification_type="warning",
+                link="/owner/bookings"
+            )
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to notify owner of payment cancellation: {e}")
 
     # Delete transaction (CASCADE will handle OTPs)
     db.delete(transaction)
