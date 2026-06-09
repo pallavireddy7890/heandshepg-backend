@@ -787,6 +787,9 @@ async def get_owner_tenants(
                 "start_date": booking.start_date.isoformat() if booking.start_date else None,
                 "end_date": booking.end_date.isoformat() if booking.end_date else None,
                 "monthly_rent": booking.amount,
+                "security_deposit": booking.security_deposit or 0,
+                "maintenance_charge": booking.maintenance_charge or (room.maintenance_charge if room and hasattr(room, 'maintenance_charge') else 0),
+                "stay_type": booking.stay_type or "monthly",
                 # Profile details
                 "profile_photo": profile.profile_photo if profile else None,
                 "gender": profile.gender if profile else None,
