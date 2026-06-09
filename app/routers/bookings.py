@@ -72,6 +72,22 @@ async def list_all_bookings(
         if booking.property:
             property_title = booking.property.title
         
+        # Calculate total paid/expected booking amount
+        if booking.status in ["paid", "checked_in", "active", "completed"]:
+            total_amt = (booking.amount or 0) + (booking.security_deposit or 0) + (booking.maintenance_charge or 0)
+        else:
+            total_amt = 0
+            if booking.rent_paid:
+                total_amt += booking.amount or 0
+            if booking.deposit_paid:
+                total_amt += booking.security_deposit or 0
+            if booking.maintenance_paid:
+                total_amt += booking.maintenance_charge or 0
+            
+            # If no flags are set, fallback to the total expected booking value (rent + deposit + maintenance)
+            if not booking.rent_paid and not booking.deposit_paid and not booking.maintenance_paid:
+                total_amt = (booking.amount or 0) + (booking.security_deposit or 0) + (booking.maintenance_charge or 0)
+
         result.append({
             "id": str(booking.id),
             "property_id": str(booking.property_id),
@@ -81,7 +97,10 @@ async def list_all_bookings(
             "status": booking.status,
             "start_date": booking.start_date.isoformat() if booking.start_date else None,
             "end_date": booking.end_date.isoformat() if booking.end_date else None,
-            "total_amount": booking.amount or 0,
+            "total_amount": total_amt,
+            "amount": booking.amount or 0,
+            "security_deposit": booking.security_deposit or 0,
+            "maintenance_charge": booking.maintenance_charge or 0,
             "created_at": booking.created_at.isoformat() if booking.created_at else None,
         })
     
@@ -428,10 +447,9 @@ async def update_booking_status(
                 detail="Invalid status transition"
             )
     
-    # If the booking is being marked as completed (checkout), restore the vacancy
     if new_status == "completed" and booking.status != "completed" and booking.room_id:
-            # Sync vacancy using centralized service
-            sync_room_vacancy(db, room.id)
+        # Sync vacancy using centralized service
+        sync_room_vacancy(db, booking.room_id)
 
     booking.status = new_status
     db.commit()
