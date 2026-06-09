@@ -497,8 +497,8 @@ async def cancel_booking(
     
     # If the booking was confirmed/paid/checked-in, we should restore the vacancy
     if booking.status in ["paid", "checked_in", "active", "vacate_requested"] and booking.room_id:
-            # Sync vacancy using centralized service
-            sync_room_vacancy(db, room.id)
+        # Sync vacancy using centralized service
+        sync_room_vacancy(db, booking.room_id)
 
     booking.status = "cancelled"
     booking.cancelled_at = datetime.utcnow()
