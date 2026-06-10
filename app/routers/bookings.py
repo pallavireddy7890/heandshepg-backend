@@ -382,7 +382,7 @@ async def create_booking(
         customer_id=current_user.id,
         owner_id=property.owner_id,
         start_date=booking_data.start_date,
-        end_date=booking_data.end_date if is_daily else None,
+        end_date=booking_data.end_date,
         stay_type=booking_data.stay_type or "monthly",
         duration_days=duration,
         amount=amount,
