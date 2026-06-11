@@ -761,30 +761,104 @@ async def collect_offline_payment(
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
     
     p_type = request.payment_type
-    
-    # Amount validation: Must match booking amount (room rent) if it's 'rent' or 'total'
-    booking_amount_inr = booking.amount
-    if p_type in ['rent', 'total'] and abs(request.amount - booking_amount_inr) > 0.01:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Amount mismatch. Rent for this room is \u20b9{booking_amount_inr}. You entered \u20b9{request.amount}."
-        )
-
-    # Billing cycle overlap detection
-    from datetime import date
-    if p_type in ['rent', 'total'] and not request.force_payment:
-        period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
-        has_overlap = WalletService.check_payment_overlap(db, booking.id, period_start, period_end)
-        
-        if has_overlap:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Payment already exists for the current cycle ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to pay for the next month?"
-            )
-
-    # Amount in paise
     if request.amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be greater than zero")
+
+    from datetime import date, datetime
+    from app.models.wallet import WalletTransaction, TransactionStatus
+
+    # Calculate start and end of current cycle for recurring charges (rent, maintenance)
+    period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
+    start_dt = datetime.combine(period_start, datetime.min.time())
+    end_dt = datetime.combine(period_end, datetime.max.time())
+
+    # Get cumulative payments for the current cycle (rent, maintenance, total)
+    cycle_payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
+        WalletTransaction.created_at >= start_dt,
+        WalletTransaction.created_at <= end_dt
+    ).all()
+
+    rent_paid = 0
+    maint_paid = 0
+    for p in cycle_payments:
+        if p.payment_type == 'rent':
+            rent_paid += p.amount / 100
+        elif p.payment_type == 'total':
+            rent_paid += booking.amount
+            maint_paid += (booking.maintenance_charge or 0)
+        elif p.payment_type == 'maintenance':
+            maint_paid += p.amount / 100
+
+    # Get lifetime payments for security deposit (deposit, total)
+    deposit_payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['deposit', 'total'])
+    ).all()
+
+    deposit_paid = 0
+    for p in deposit_payments:
+        if p.payment_type == 'deposit':
+            deposit_paid += p.amount / 100
+        elif p.payment_type == 'total':
+            deposit_paid += (booking.security_deposit or 0)
+
+    # Validate based on payment type
+    if p_type == 'rent':
+        remaining_rent = max(0.0, float(booking.amount) - rent_paid)
+        # If rent is already fully paid, and they don't force it, throw overlap warning
+        if remaining_rent <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Rent is already fully paid for the current cycle ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to record an extra payment?"
+            )
+        if request.amount > remaining_rent + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining rent of \u20b9{remaining_rent:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+    elif p_type == 'deposit':
+        remaining_deposit = max(0.0, float(booking.security_deposit or 0) - deposit_paid)
+        if remaining_deposit <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Security deposit has already been fully paid."
+            )
+        if request.amount > remaining_deposit + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining security deposit of \u20b9{remaining_deposit:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+    elif p_type == 'maintenance':
+        remaining_maint = max(0.0, float(booking.maintenance_charge or 0) - maint_paid)
+        if remaining_maint <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Maintenance charge is already fully paid for the current cycle."
+            )
+        if request.amount > remaining_maint + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining maintenance charge of \u20b9{remaining_maint:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+    elif p_type == 'total':
+        total_due = float(booking.amount) + float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
+        total_paid = rent_paid + deposit_paid + maint_paid
+        remaining_total = max(0.0, total_due - total_paid)
+        if remaining_total <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="All payments (rent, deposit, maintenance) are already fully paid for this cycle."
+            )
+        if request.amount > remaining_total + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining total due of \u20b9{remaining_total:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+
     amount_paise = int(request.amount * 100)
     
     # 1. Create offline transaction

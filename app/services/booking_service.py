@@ -16,17 +16,60 @@ class BookingService:
         if not booking:
             return False, "Booking not found"
             
-        # 1. Update specific payment flags
-        if payment_type == 'rent':
-            booking.rent_paid = True
-        elif payment_type == 'deposit':
-            booking.deposit_paid = True
-        elif payment_type == 'maintenance':
-            booking.maintenance_paid = True
-        elif payment_type in ['total', 'booking']:
-            booking.rent_paid = True
-            booking.deposit_paid = True
-            booking.maintenance_paid = True
+        # 1. Update specific payment flags based on cumulative paid amounts
+        from datetime import date, datetime
+        from app.services.wallet_service import WalletService
+        from app.models.wallet import WalletTransaction, TransactionStatus
+        
+        # Calculate start and end of current cycle for recurring charges (rent, maintenance)
+        period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
+        start_dt = datetime.combine(period_start, datetime.min.time())
+        end_dt = datetime.combine(period_end, datetime.max.time())
+        
+        # Query recurring cycle payments (rent, maintenance, total)
+        cycle_payments = db.query(WalletTransaction).filter(
+            WalletTransaction.booking_id == booking.id,
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
+            WalletTransaction.created_at >= start_dt,
+            WalletTransaction.created_at <= end_dt
+        ).all()
+        
+        rent_paid_amt = 0
+        total_maint_txns_amount = 0
+        for p in cycle_payments:
+            if p.payment_type == 'rent':
+                rent_paid_amt += p.amount / 100
+            elif p.payment_type == 'total':
+                rent_paid_amt += booking.amount
+                total_maint_txns_amount += (booking.maintenance_charge or 0)
+            elif p.payment_type == 'maintenance':
+                total_maint_txns_amount += p.amount / 100
+                
+        # Query lifetime security deposit payments (deposit, total)
+        all_payments = db.query(WalletTransaction).filter(
+            WalletTransaction.booking_id == booking.id,
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.payment_type.in_(['deposit', 'total'])
+        ).all()
+        
+        total_deposit_txns_amount = 0
+        for p in all_payments:
+            if p.payment_type == 'deposit':
+                total_deposit_txns_amount += p.amount / 100
+            elif p.payment_type == 'total':
+                total_deposit_txns_amount += (booking.security_deposit or 0)
+                
+        # Allocate lifetime deposit transactions to security deposit and maintenance charge
+        security_cap = float(booking.security_deposit or 0)
+        deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
+        leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+        
+        maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
+
+        booking.rent_paid = (rent_paid_amt >= booking.amount)
+        booking.deposit_paid = (deposit_paid_amt >= (booking.security_deposit or 0))
+        booking.maintenance_paid = (maintenance_paid_amt >= (booking.maintenance_charge or 0))
             
         # 2. Update last payment date for rent cycles
         if payment_type in ['rent', 'total', 'booking']:

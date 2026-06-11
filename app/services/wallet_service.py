@@ -53,22 +53,32 @@ class WalletService:
 
     @staticmethod
     def check_payment_overlap(db: Session, booking_id: UUID, period_start: date, period_end: date) -> bool:
-        """Check if any successful rent/total payment exists for the given booking in the specified period."""
-        # Check WalletTransactions
-        # Type 'rent' or 'total', status 'completed'
-        # Within the period (created_at)
+        """Check if rent is fully paid for the given booking in the specified period."""
         start_dt = datetime.combine(period_start, datetime.min.time())
         end_dt = datetime.combine(period_end, datetime.max.time())
         
-        existing = db.query(WalletTransaction).filter(
+        # Get booking to know the full rent amount
+        from app.models.booking import Booking
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            return False
+            
+        payments = db.query(WalletTransaction).filter(
             WalletTransaction.booking_id == booking_id,
             WalletTransaction.status == TransactionStatus.completed,
             WalletTransaction.payment_type.in_(['rent', 'total']),
             WalletTransaction.created_at >= start_dt,
             WalletTransaction.created_at <= end_dt
-        ).first()
+        ).all()
         
-        return existing is not None
+        rent_paid = 0
+        for p in payments:
+            if p.payment_type == 'rent':
+                rent_paid += p.amount / 100
+            elif p.payment_type == 'total':
+                rent_paid += booking.amount
+                
+        return rent_paid >= booking.amount
     
     @staticmethod
     def get_or_create_wallet(db: Session, user_id: UUID) -> Wallet:

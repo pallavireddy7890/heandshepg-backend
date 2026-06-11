@@ -128,7 +128,7 @@ async def notify_vacate_request(db: Session, owner_id: uuid.UUID, customer_name:
         title="🏠 Vacate Request",
         message=f"{customer_name} has requested to vacate from {property_title}. Please review and process their checkout.",
         notification_type="vacate_request",
-        link="/owner/bookings?tab=requests",
+        link=f"/owner/bookings?tab=vacate&bookingId={booking_id}",
         reference_id=str(booking_id),
         reference_type="booking"
     )

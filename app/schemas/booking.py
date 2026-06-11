@@ -62,12 +62,21 @@ class BookingExtend(BaseModel):
     extra_days: int = Field(..., gt=0)
 
 
+class VacateDetails(BaseModel):
+    deposit_amount: int
+    deposit_paid_amount: int = 0
+    maintenance_charges: int
+    maintenance_paid_amount: int = 0
+    unpaid_invoices: int
+    final_refund: int
+
+
 class BookingResponse(BaseModel):
     id: UUID
     property_id: UUID
     room_id: Optional[UUID]
     bed_id: Optional[UUID] = None
-    customer_id: UUID
+    customer_id: Optional[UUID] = None
     owner_id: UUID
     start_date: date
     end_date: Optional[date]
@@ -84,6 +93,9 @@ class BookingResponse(BaseModel):
     last_payment_date: Optional[datetime] = None
     cancelled_at: Optional[datetime]
     cancel_reason: Optional[str]
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    vacate_details: Optional[VacateDetails] = None
     created_at: datetime
     updated_at: datetime
 

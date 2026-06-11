@@ -84,6 +84,7 @@ class RentManagementItem(BaseModel):
     email: str
     property_title: str
     room_number: Optional[str]
+    floor_number: Optional[int] = None
     monthly_rent: float
     status: str  # paid, unpaid, partial
     payment_type: Optional[str]
@@ -92,6 +93,13 @@ class RentManagementItem(BaseModel):
     due_date: Optional[date] = None
     security_paid: float = 0
     maintenance_paid: float = 0
+    security_deposit: float = 0
+    maintenance_charge: float = 0
+    remaining_rent: float = 0
+    deposit_paid: bool = False
+    rent_paid: bool = False
+    maintenance_paid_status: bool = False
+    rent_paid_this_period: float = 0
 
 
 class RentManagementResponse(BaseModel):
@@ -113,35 +121,28 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
     start_dt = datetime.combine(period_start, datetime.min.time())
     end_dt = datetime.combine(period_end, datetime.max.time())
 
-    # Query payments for this booking
-    # For initial month, we also look for 'total' payments made at any time for this booking
-    is_first_month = (booking.start_date.year == year and booking.start_date.month == month)
-    
-    if is_first_month:
-        payments = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['rent', 'total', 'deposit', 'maintenance']),
-            or_(
-                and_(WalletTransaction.created_at >= start_dt, WalletTransaction.created_at <= end_dt),
-                WalletTransaction.payment_type == 'total'
-            )
-        ).all()
-    else:
-        payments = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['rent', 'total', 'deposit', 'maintenance']),
-            WalletTransaction.created_at >= start_dt,
-            WalletTransaction.created_at <= end_dt
-        ).all()
+    # Query recurring payments (rent and maintenance) for this booking in this period
+    payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
+        WalletTransaction.created_at >= start_dt,
+        WalletTransaction.created_at <= end_dt
+    ).all()
+
+    # Query security deposit payments across all time (since it is a lifetime payment)
+    deposit_payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['deposit', 'total'])
+    ).all()
 
     rent_paid = 0
-    security_paid = 0
-    maintenance_paid = 0
+    total_maint_txns_amount = 0
     p_date = None
     p_type = None
 
+    # Calculate recurring rent and maintenance
     for p in payments:
         if not p_date or p.created_at > p_date:
             p_date = p.created_at
@@ -150,14 +151,29 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
         if p.payment_type == 'rent':
             rent_paid += p.amount / 100
         elif p.payment_type == 'total':
-            # Attribute portions based on booking record
             rent_paid += booking.amount
-            security_paid += (booking.security_deposit or 0)
-            maintenance_paid += (booking.maintenance_charge or 0)
-        elif p.payment_type == 'deposit':
-            security_paid += p.amount / 100
+            total_maint_txns_amount += (booking.maintenance_charge or 0)
         elif p.payment_type == 'maintenance':
-            maintenance_paid += p.amount / 100
+            total_maint_txns_amount += p.amount / 100
+
+    # Calculate completed deposit transactions (lifetime)
+    total_deposit_txns_amount = 0
+    for p in deposit_payments:
+        if not p_date or p.created_at > p_date:
+            p_date = p.created_at
+            p_type = p.payment_type
+
+        if p.payment_type == 'deposit':
+            total_deposit_txns_amount += p.amount / 100
+        elif p.payment_type == 'total':
+            total_deposit_txns_amount += (booking.security_deposit or 0)
+
+    # Allocate lifetime deposit transactions to security deposit and maintenance charge
+    security_cap = float(booking.security_deposit or 0)
+    security_paid = min(total_deposit_txns_amount, security_cap)
+    leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+    
+    maintenance_paid = total_maint_txns_amount + leftover_deposit
 
     # Determine Status
     if rent_paid >= booking.amount:
@@ -647,7 +663,13 @@ async def get_rent_management_data(
                 "due_date": calculated_due_date,
                 "security_paid": security_this_period,
                 "maintenance_paid": maintenance_this_period,
-                "rent_paid_this_period": rent_this_period
+                "rent_paid_this_period": rent_this_period,
+                "security_deposit": booking.security_deposit or 0,
+                "maintenance_charge": booking.maintenance_charge or 0,
+                "remaining_rent": max(0.0, float(booking.amount) - rent_this_period),
+                "deposit_paid": booking.deposit_paid,
+                "rent_paid": booking.rent_paid,
+                "maintenance_paid_status": booking.maintenance_paid
             })
 
         return {
@@ -946,6 +968,14 @@ class AddTenantRequest(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     join_date: Optional[date] = None
+    security_deposit: Optional[int] = None
+    deposit_paid: Optional[int] = None
+    deposit_payment_mode: Optional[str] = None
+    deposit_payment_date: Optional[date] = None
+    deposit_notes: Optional[str] = None
+    maintenance_charge: Optional[int] = None
+    maintenance_paid: Optional[int] = None
+    maintenance_payment_mode: Optional[str] = None
 
 
 @router.post("/rooms/{room_id}/add-tenant", dependencies=[Depends(require_owner)])
@@ -1037,6 +1067,9 @@ async def add_tenant_to_room(
 
         # Create active booking
         start_date = request.join_date if request.join_date else date.today()
+        sec_deposit = request.security_deposit if request.security_deposit is not None else (room.deposit or 0)
+        maint_charge = request.maintenance_charge if request.maintenance_charge is not None else (room.maintenance_charge or 0)
+
         booking = Booking(
             property_id=property_obj.id,
             room_id=room.id,
@@ -1045,8 +1078,8 @@ async def add_tenant_to_room(
             start_date=start_date,
             status="active",
             amount=room.price or 0,
-            security_deposit=room.deposit or 0,
-            maintenance_charge=0,
+            security_deposit=sec_deposit,
+            maintenance_charge=maint_charge,
             stay_type=room.stay_type or "monthly",
             customer_snapshot={
                 "name": tenant_name,
@@ -1055,6 +1088,55 @@ async def add_tenant_to_room(
             },
         )
         db.add(booking)
+        db.flush()
+
+        # Create wallet transactions if offline payments were recorded
+        from app.services.wallet_service import WalletService
+        from app.services.booking_service import BookingService
+        
+        owner_wallet = WalletService.get_or_create_wallet(db, current_user.id)
+        
+        # 1. Deposit Payment
+        dep_paid = request.deposit_paid or 0
+        if dep_paid > 0:
+            dep_mode = request.deposit_payment_mode or "cash"
+            dep_date = request.deposit_payment_date or start_date
+            dep_notes = request.deposit_notes or "Initial offline deposit payment"
+            
+            transaction = WalletService.create_offline_transaction(
+                db=db,
+                wallet_id=owner_wallet.id,
+                booking_id=booking.id,
+                payer_id=tenant_user.id,
+                receiver_id=current_user.id,
+                amount=int(dep_paid * 100),
+                payment_type="deposit",
+                payment_method=dep_mode,
+                offline_notes=dep_notes,
+                description="Initial offline deposit payment recorded during tenant addition",
+            )
+            WalletService.complete_transaction(db, transaction.id, bypass_otp=True)
+
+        # 2. Maintenance Payment
+        maint_paid = request.maintenance_paid or 0
+        if maint_paid > 0:
+            maint_mode = request.maintenance_payment_mode or "cash"
+            transaction = WalletService.create_offline_transaction(
+                db=db,
+                wallet_id=owner_wallet.id,
+                booking_id=booking.id,
+                payer_id=tenant_user.id,
+                receiver_id=current_user.id,
+                amount=int(maint_paid * 100),
+                payment_type="maintenance",
+                payment_method=maint_mode,
+                offline_notes="Initial offline maintenance payment",
+                description="Initial offline maintenance payment recorded during tenant addition",
+            )
+            WalletService.complete_transaction(db, transaction.id, bypass_otp=True)
+
+        # Recalculate status and flags
+        BookingService.handle_payment_completion(db, booking.id, "total")
 
         # Sync vacancy using centralized service
         sync_room_vacancy(db, room.id)
