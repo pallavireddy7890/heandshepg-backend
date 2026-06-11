@@ -543,29 +543,76 @@ async def request_vacate(
     db.commit()
     db.refresh(booking)
     
-    # Get property and customer details for notification
+    # Fetch property and customer details for notification
     property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
     customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
     
     property_title = property_obj.title if property_obj else "Property"
     customer_name = customer_profile.name if customer_profile else current_user.email
+
+    # Calculate deposit, maintenance, and unpaid invoices (deductions)
+    deposit_amount = booking.security_deposit or 0
+    maintenance_charges = 0 if booking.maintenance_paid else (booking.maintenance_charge or 0)
     
-    # Notify owner about vacate request
+    from app.models import Invoice
+    unpaid_invoices = db.query(Invoice).filter(
+        Invoice.booking_id == booking.id,
+        Invoice.status.in_(["pending", "overdue"])
+    ).all()
+    deductions = sum(inv.amount for inv in unpaid_invoices)
+    
+    final_refund = deposit_amount - maintenance_charges - deductions
+    
+    owner_message = (
+        f"{customer_name} has requested to vacate from {property_title}.\n\n"
+        f"Refund & Dues Details:\n"
+        f"• Deposit Amount: ₹{deposit_amount}\n"
+        f"• Maintenance Charges (Unpaid): ₹{maintenance_charges}\n"
+        f"• Other Deductions (Unpaid Invoices): ₹{deductions}\n"
+        f"• Final Refund Amount: ₹{final_refund}\n\n"
+        f"Please review and process their checkout."
+    )
+    
+    tenant_message = (
+        f"Your request to vacate from {property_title} has been submitted.\n\n"
+        f"Estimated Refund Breakdown:\n"
+        f"• Deposit Amount: ₹{deposit_amount}\n"
+        f"• Maintenance Charges (Unpaid): ₹{maintenance_charges}\n"
+        f"• Other Deductions (Unpaid Invoices): ₹{deductions}\n"
+        f"• Estimated Refund Amount: ₹{final_refund}\n\n"
+        f"The property owner has been notified to process your checkout."
+    )
+    
+    # Notify owner and tenant about vacate request
     try:
         from app.utils.notifications import create_notification
+        
+        # 1. Notify Owner
         await create_notification(
             db=db,
             user_id=booking.owner_id,
             title="Vacate Request",
-            message=f"{customer_name} has requested to vacate from {property_title}. Please review and process their checkout.",
+            message=owner_message,
             notification_type="vacate_request",
             reference_id=str(booking.id),
             reference_type="booking"
         )
+        
+        # 2. Notify Tenant
+        await create_notification(
+            db=db,
+            user_id=booking.customer_id,
+            title="Vacate Request Submitted",
+            message=tenant_message,
+            notification_type="info",
+            reference_id=str(booking.id),
+            reference_type="booking",
+            link="/bookings"
+        )
     except Exception as e:
         # Log but don't fail the vacate request
         import logging
-        logging.warning(f"Failed to send vacate notification: {e}")
+        logging.warning(f"Failed to send vacate notifications: {e}")
     
     return {
         "success": True,
