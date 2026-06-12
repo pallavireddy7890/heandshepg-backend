@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-
+from pydantic import BaseModel as PydanticModel
 from app.database import get_db
 from app.models import User, Profile, UserRole, AppRole
 from app.schemas import (
@@ -212,8 +212,6 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
         "sms_sent": bool(phone_clean)
     }
 
-
-from pydantic import BaseModel as PydanticModel
 
 class VerifyEmailRequest(PydanticModel):
     email: str

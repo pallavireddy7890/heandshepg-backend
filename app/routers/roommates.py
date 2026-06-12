@@ -1,6 +1,6 @@
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -547,7 +547,14 @@ async def get_chat_list(
         ))
         
     # Sort by last message time
-    result.sort(key=lambda x: x.last_message_at or datetime.min, reverse=True)
+    def get_sort_key(x):
+        if not x.last_message_at:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if x.last_message_at.tzinfo is not None:
+            return x.last_message_at
+        return x.last_message_at.replace(tzinfo=timezone.utc)
+        
+    result.sort(key=get_sort_key, reverse=True)
     return result
 
 

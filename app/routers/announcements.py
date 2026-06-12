@@ -34,6 +34,7 @@ class AnnouncementResponse(BaseModel):
     title: str
     message: str
     priority: str
+    is_admin: bool = False
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     is_active: bool
@@ -192,6 +193,7 @@ async def create_announcement(
         title=announcement.title,
         message=announcement.message,
         priority=announcement.priority,
+        is_admin=announcement.is_admin,
         is_active=announcement.is_active,
         created_at=announcement.created_at.isoformat(),
         property_title=property_title
@@ -203,7 +205,7 @@ async def get_owner_announcements(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all announcements created by the current owner."""
+    """Get all announcements for the current owner, including system-wide/owner admin announcements."""
     role = get_user_role(current_user, db)
     if role != "owner":
         raise HTTPException(
@@ -211,8 +213,14 @@ async def get_owner_announcements(
             detail="Only property owners can access this endpoint"
         )
     
+    # Return owner's own announcements or admin announcements targeted to owners/all
     announcements = db.query(Announcement).filter(
-        Announcement.owner_id == current_user.id
+        (Announcement.owner_id == current_user.id) |
+        (
+            (Announcement.is_admin == True) &
+            (Announcement.is_active == True) &
+            Announcement.target_audience.in_(["all", "owners"])
+        )
     ).order_by(desc(Announcement.created_at)).all()
     
     result = []
@@ -221,6 +229,8 @@ async def get_owner_announcements(
         if ann.property_id:
             prop = db.query(Property).filter(Property.id == ann.property_id).first()
             property_title = prop.title if prop else None
+        elif ann.is_admin:
+            property_title = "System Announcement"
         
         result.append(AnnouncementResponse(
             id=ann.id,
@@ -229,6 +239,7 @@ async def get_owner_announcements(
             title=ann.title,
             message=ann.message,
             priority=ann.priority,
+            is_admin=ann.is_admin,
             start_time=ann.start_time.isoformat() if ann.start_time else None,
             end_time=ann.end_time.isoformat() if ann.end_time else None,
             is_active=ann.is_active,
@@ -280,6 +291,7 @@ async def get_tenant_announcements(
             title=ann.title,
             message=ann.message,
             priority=ann.priority,
+            is_admin=ann.is_admin,
             start_time=ann.start_time.isoformat() if ann.start_time else None,
             end_time=ann.end_time.isoformat() if ann.end_time else None,
             is_active=ann.is_active,
@@ -371,6 +383,7 @@ async def update_announcement(
         title=announcement.title,
         message=announcement.message,
         priority=announcement.priority,
+        is_admin=announcement.is_admin,
         start_time=announcement.start_time.isoformat() if announcement.start_time else None,
         end_time=announcement.end_time.isoformat() if announcement.end_time else None,
         is_active=announcement.is_active,
