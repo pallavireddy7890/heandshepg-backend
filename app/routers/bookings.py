@@ -386,7 +386,11 @@ async def get_booking(
     response.room = {
         "id": str(room.id),
         "room_type": room.room_type,
+        "room_number": room.room_number,
+        "floor_number": room.floor_number,
         "bed_count": room.bed_count,
+        "room_description": room.room_description,
+        "price": room.price,
     } if room else None
     
     return response
