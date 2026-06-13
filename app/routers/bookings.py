@@ -73,20 +73,32 @@ async def list_all_bookings(
             property_title = booking.property.title
         
         # Calculate total paid/expected booking amount
-        if booking.status in ["paid", "checked_in", "active", "completed"]:
-            total_amt = (booking.amount or 0) + (booking.security_deposit or 0) + (booking.maintenance_charge or 0)
+        from sqlalchemy import func
+        from app.models.wallet import WalletTransaction, TransactionStatus
+        actual_paid_paise = db.query(func.sum(WalletTransaction.amount)).filter(
+            WalletTransaction.booking_id == booking.id,
+            WalletTransaction.status == TransactionStatus.completed
+        ).scalar() or 0
+        actual_paid = int(actual_paid_paise / 100)
+
+        if actual_paid > 0:
+            total_amt = actual_paid
         else:
-            total_amt = 0
-            if booking.rent_paid:
-                total_amt += booking.amount or 0
-            if booking.deposit_paid:
-                total_amt += booking.security_deposit or 0
-            if booking.maintenance_paid:
-                total_amt += booking.maintenance_charge or 0
-            
-            # If no flags are set, fallback to the total expected booking value (rent + deposit + maintenance)
-            if not booking.rent_paid and not booking.deposit_paid and not booking.maintenance_paid:
+            # Fallback to booking expected amount if no transactions recorded
+            if booking.status in ["paid", "checked_in", "active", "completed", "vacate_requested", "vacated"]:
                 total_amt = (booking.amount or 0) + (booking.security_deposit or 0) + (booking.maintenance_charge or 0)
+            else:
+                total_amt = 0
+                if booking.rent_paid:
+                    total_amt += booking.amount or 0
+                if booking.deposit_paid:
+                    total_amt += booking.security_deposit or 0
+                if booking.maintenance_paid:
+                    total_amt += booking.maintenance_charge or 0
+                
+                # If no flags are set, fallback to the total expected booking value (rent + deposit + maintenance)
+                if not booking.rent_paid and not booking.deposit_paid and not booking.maintenance_paid:
+                    total_amt = (booking.amount or 0) + (booking.security_deposit or 0) + (booking.maintenance_charge or 0)
 
         result.append({
             "id": str(booking.id),
