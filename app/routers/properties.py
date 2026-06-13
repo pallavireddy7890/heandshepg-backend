@@ -28,6 +28,21 @@ from app.services.vacancy import get_room_availability, get_property_availabilit
 router = APIRouter(prefix="/properties", tags=["Properties"])
 
 
+def sync_property_rent_and_deposit(db: Session, property_id: UUID):
+    """Sync property monthly_rent and deposit columns with its cheapest room."""
+    rooms = db.query(Room).filter(Room.property_id == property_id).all()
+    if rooms:
+        # Prioritize monthly rooms if available
+        monthly_rooms = [r for r in rooms if not r.stay_type or r.stay_type == "monthly"]
+        lead_rooms = monthly_rooms if monthly_rooms else rooms
+        lead_room = min(lead_rooms, key=lambda r: r.price if r.price is not None else float('inf'))
+        prop = db.query(Property).filter(Property.id == property_id).first()
+        if prop and lead_room.price is not None:
+            prop.monthly_rent = lead_room.price
+            prop.deposit = lead_room.deposit
+            db.commit()
+
+
 @router.get("", response_model=List[PropertyListResponse])
 async def list_properties(
     db: Session = Depends(get_db),
@@ -214,6 +229,7 @@ async def create_property(
     
     db.commit()
     db.refresh(new_property)
+    sync_property_rent_and_deposit(db, new_property.id)
     return new_property
 
 
@@ -345,6 +361,7 @@ async def create_room(
     db.add(new_room)
     db.commit()
     db.refresh(new_room)
+    sync_property_rent_and_deposit(db, property_id)
     return new_room
 
 
@@ -391,6 +408,7 @@ async def update_room(
     
     db.commit()
     db.refresh(room)
+    sync_property_rent_and_deposit(db, property_id)
     return room
 
 
@@ -428,4 +446,5 @@ async def delete_room(
     
     db.delete(room)
     db.commit()
+    sync_property_rent_and_deposit(db, property_id)
     return {"message": "Room deleted successfully"}
