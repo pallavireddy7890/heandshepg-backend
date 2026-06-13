@@ -16,6 +16,32 @@ from app.services.notification_service import NotificationService
 logger = logging.getLogger(__name__)
 
 
+def parse_transaction_metadata(description: str):
+    import re
+    if not description:
+        return 0, 0, description
+    
+    wallet_contribution = 0
+    total_amount = 0
+    clean_desc = description
+    
+    # Try to find [wallet_contribution:xxx]
+    wc_match = re.search(r'\[wallet_contribution:(\d+)\]', clean_desc)
+    if wc_match:
+        wallet_contribution = int(wc_match.group(1))
+        clean_desc = re.sub(r'\[wallet_contribution:\d+\]', '', clean_desc)
+        
+    # Try to find [total_amount:xxx]
+    ta_match = re.search(r'\[total_amount:(\d+)\]', clean_desc)
+    if ta_match:
+        total_amount = int(ta_match.group(1))
+        clean_desc = re.sub(r'\[total_amount:\d+\]', '', clean_desc)
+        
+    # Clean up any double spaces/brackets
+    clean_desc = clean_desc.strip()
+    return wallet_contribution, total_amount, clean_desc
+
+
 class WalletService:
     """Service for wallet operations."""
     
@@ -476,8 +502,13 @@ class WalletService:
         if not owner_wallet:
             return False, "Owner wallet not found"
         
+        # Parse wallet contribution from description
+        wallet_contribution = 0
+        if transaction.description:
+            wallet_contribution, _, _ = parse_transaction_metadata(transaction.description)
+        
         # Move from pending_balance to balance
-        owner_wallet.balance += transaction.amount
+        owner_wallet.balance += (transaction.amount + wallet_contribution)
         owner_wallet.pending_balance = max(0, owner_wallet.pending_balance - transaction.amount)
         
         # Update transaction status
@@ -517,6 +548,12 @@ class WalletService:
                 (WalletTransaction.receiver_id == user_id)
             )
         
+        # Exclude debit transactions where the user is NOT the payer (so owner doesn't see tenant's debit transaction)
+        query = query.filter(
+            ~((WalletTransaction.transaction_type == TransactionType.debit) & 
+              (WalletTransaction.payer_id != user_id))
+        )
+        
         from sqlalchemy import or_
         # Exclude unpaid/pending online transactions from history
         query = query.filter(
@@ -553,8 +590,11 @@ class WalletService:
                         "status": booking.status,
                     }
             
+            # Parse metadata
+            wallet_contribution, total_amount, clean_desc = parse_transaction_metadata(txn.description)
+            
             # Create meaningful description
-            description = txn.description
+            description = clean_desc
             if property_title and payer_profile:
                 description = f"Payment from {payer_profile.name} for {property_title}"
             elif property_title:
@@ -564,6 +604,8 @@ class WalletService:
                 "id": str(txn.id),
                 "amount": txn.amount,
                 "amount_inr": txn.amount / 100,
+                "total_amount_inr": total_amount / 100 if total_amount > 0 else txn.amount / 100,
+                "wallet_contribution_inr": wallet_contribution / 100 if wallet_contribution > 0 else 0.0,
                 "transaction_type": txn.transaction_type.value if hasattr(txn.transaction_type, 'value') else txn.transaction_type,
                 "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
                 "payer_name": payer_profile.name if payer_profile else None,

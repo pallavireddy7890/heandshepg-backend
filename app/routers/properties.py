@@ -365,6 +365,43 @@ async def create_room(
     return new_room
 
 
+@router.post("/{property_id}/rooms/bulk", response_model=List[RoomResponse], dependencies=[Depends(require_owner)])
+async def create_rooms_bulk(
+    property_id: UUID,
+    rooms_data: List[RoomCreate],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Add multiple rooms to a property in a single transaction (owner only)."""
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
+    ).first()
+    
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found or you don't have permission"
+        )
+    
+    new_rooms = []
+    for room_data in rooms_data:
+        new_room = Room(
+            property_id=property_id,
+            **room_data.model_dump()
+        )
+        db.add(new_room)
+        new_rooms.append(new_room)
+        
+    db.commit()
+    for new_room in new_rooms:
+        db.refresh(new_room)
+        
+    sync_property_rent_and_deposit(db, property_id)
+    return new_rooms
+
+
 @router.put("/{property_id}/rooms/{room_id}", response_model=RoomResponse, dependencies=[Depends(require_owner)])
 async def update_room(
     property_id: UUID,

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import User, Booking, Profile, Wallet, WalletTransaction, TransactionType, TransactionStatus, Property, Room
 from app.utils.security import get_current_user, get_user_role
-from app.services.wallet_service import WalletService
+from app.services.wallet_service import WalletService, parse_transaction_metadata
 from app.services.booking_service import BookingService
 from app.services.vacancy import sync_room_vacancy
 from app.config import get_settings
@@ -51,6 +51,8 @@ class InitiatePaymentResponse(BaseModel):
     currency: str
     key_id: str
     message: str
+    otp: Optional[str] = None
+    owner_name: Optional[str] = None
     
     
 class InitiateOfflinePaymentRequest(BaseModel):
@@ -149,12 +151,17 @@ async def get_my_pending_payments(
                 if prop:
                     property_title = prop.title
         
+        # Parse metadata
+        wallet_contribution, total_amount, clean_desc = parse_transaction_metadata(txn.description)
+        
         result.append({
             "id": str(txn.id),
             "transaction_id": str(txn.id),
             "booking_id": str(txn.booking_id) if txn.booking_id else None,
             "payment_type": txn.payment_type if hasattr(txn, 'payment_type') else 'total',
             "amount": txn.amount / 100,  # In INR
+            "total_amount": total_amount / 100 if total_amount > 0 else txn.amount / 100,
+            "wallet_contribution": wallet_contribution / 100 if wallet_contribution > 0 else 0.0,
             "owner_name": owner_profile.name if owner_profile else "Property Owner",
             "property_title": property_title,
             "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
@@ -162,6 +169,7 @@ async def get_my_pending_payments(
             "offline_notes": txn.offline_notes,
             "offline_reference": txn.offline_reference,
             "created_at": txn.created_at.isoformat() if txn.created_at else None,
+            "description": clean_desc,
         })
     
     return result
@@ -199,10 +207,15 @@ async def get_owner_pending_payments(
                 if prop:
                     property_title = prop.title
         
+        # Parse metadata
+        wallet_contribution, total_amount, clean_desc = parse_transaction_metadata(txn.description)
+        
         result.append({
             "id": str(txn.id),
             "transaction_id": str(txn.id),
             "amount": txn.amount / 100,  # In INR
+            "total_amount": total_amount / 100 if total_amount > 0 else txn.amount / 100,
+            "wallet_contribution": wallet_contribution / 100 if wallet_contribution > 0 else 0.0,
             "customer_name": payer_profile.name if payer_profile else "Customer",
             "property_title": property_title,
             "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
@@ -210,6 +223,7 @@ async def get_owner_pending_payments(
             "offline_notes": txn.offline_notes,
             "offline_reference": txn.offline_reference,
             "created_at": txn.created_at.isoformat() if txn.created_at else None,
+            "description": clean_desc,
         })
     
     return result
@@ -339,10 +353,9 @@ async def initiate_wallet_payment(
             )
     
     # Create wallet transaction for the owner (credit)
-    # This represents the FULL amount the owner expects
+    # This represents the REMAINING online amount the owner expects to verify with OTP
     description = f"Payment for {request.payment_type} - booking {request.booking_id}"
-    if wallet_contribution_paise > 0:
-        description += f" (Wallet: ₹{wallet_contribution_paise/100:.2f}, Online: ₹{remaining_amount_paise/100:.2f})"
+    description += f" [wallet_contribution:{wallet_contribution_paise}][total_amount:{requested_amount_paise}]"
         
     transaction = WalletService.create_transaction(
         db=db,
@@ -350,9 +363,9 @@ async def initiate_wallet_payment(
         booking_id=UUID(request.booking_id),
         payer_id=current_user.id,
         receiver_id=booking.owner_id,
-        amount=requested_amount_paise, # Full amount credited to owner's pending balance
+        amount=remaining_amount_paise, # Online payable amount
         transaction_type=TransactionType.credit,
-        razorpay_order_id=razorpay_order_id,
+        razorpay_order_id=razorpay_order_id or "paid_via_wallet",
         description=description,
     )
     
@@ -361,9 +374,22 @@ async def initiate_wallet_payment(
         transaction.payment_type = request.payment_type
         db.commit()
     
-    # If fully paid via wallet, we still want OTP verification (or maybe not?)
-    # Usually, even wallet payments should be verified or at least recorded.
-    # The current system requires OTP for all "credits" to owner wallets.
+    # If fully paid via wallet (remaining_amount_paise == 0), generate OTP immediately
+    otp_code = None
+    owner_name = None
+    if remaining_amount_paise == 0:
+        transaction.status = TransactionStatus.otp_sent
+        db.commit()
+        
+        # Generate OTP
+        success, otp_code = WalletService.create_otp_for_display(
+            db=db,
+            transaction_id=transaction.id,
+            user_id=booking.owner_id,
+            otp_type="owner"
+        )
+        owner_profile = db.query(Profile).filter(Profile.user_id == booking.owner_id).first()
+        owner_name = owner_profile.name if owner_profile else "Property Owner"
     
     return InitiatePaymentResponse(
         transaction_id=str(transaction.id),
@@ -371,7 +397,9 @@ async def initiate_wallet_payment(
         amount=remaining_amount_paise,
         currency="INR",
         key_id=settings.razorpay_key_id or "rzp_test_mock",
-        message="Payment initiated. " + ("Complete via Razorpay." if remaining_amount_paise > 0 else "Verify with owner via OTP.")
+        message="Payment initiated. " + ("Complete via Razorpay." if remaining_amount_paise > 0 else "Verify with owner via OTP."),
+        otp=otp_code,
+        owner_name=owner_name
     )
 
 
@@ -1031,10 +1059,35 @@ async def delete_transaction(
         
     # Reverse wallet impact if necessary
     # If completed, deduct from owner's main balance. If pending/otp_sent, deduct from pending_balance.
+    # Parse wallet contribution metadata from description
+    wallet_contribution = 0
+    if transaction.description:
+        wallet_contribution, _, _ = parse_transaction_metadata(transaction.description)
+        
+    # Refund to tenant if there is a wallet contribution
+    if wallet_contribution > 0 and transaction.payer_id:
+        tenant_wallet = db.query(Wallet).filter(Wallet.user_id == transaction.payer_id).first()
+        if tenant_wallet:
+            tenant_wallet.balance += wallet_contribution
+            
+            # Create a credit transaction for the tenant's wallet to show refund of wallet balance
+            refund_txn = WalletTransaction(
+                wallet_id=tenant_wallet.id,
+                payer_id=transaction.receiver_id,
+                receiver_id=transaction.payer_id,
+                booking_id=transaction.booking_id,
+                amount=wallet_contribution,
+                transaction_type=TransactionType.credit,
+                status=TransactionStatus.completed,
+                description=f"Refund of wallet contribution for {transaction.payment_type} - booking {transaction.booking_id}"
+            )
+            db.add(refund_txn)
+            
     wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
     if wallet:
         if transaction.status == TransactionStatus.completed:
-            wallet.balance = max(0, wallet.balance - transaction.amount)
+            # Deduct both online paid amount and wallet contribution
+            wallet.balance = max(0, wallet.balance - (transaction.amount + wallet_contribution))
         # Only deduct from pending_balance if the transaction was actually added to pending_balance
         # (online transactions are added when status is otp_sent or verified; offline transactions when status is pending)
         elif transaction.status in [TransactionStatus.otp_sent, TransactionStatus.verified] or (transaction.payment_method != 'online' and transaction.status == TransactionStatus.pending):
