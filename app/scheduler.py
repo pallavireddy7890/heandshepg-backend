@@ -357,7 +357,7 @@ def cleanup_expired_bookings():
         ).all()
         
         for booking in expired_requests:
-            booking.status = 'expired'
+            booking.status = 'cancelled'
             logger.info(f"Expired unaccepted booking request: {booking.id}")
             if booking.room_id:
                 sync_room_vacancy(db, booking.room_id)
@@ -373,7 +373,7 @@ def cleanup_expired_bookings():
         ).all()
         
         for booking in unpaid_bookings:
-            booking.status = 'expired'
+            booking.status = 'cancelled'
             logger.info(f"Expired accepted unpaid booking: {booking.id}")
             
             # Release the physical bed hold
@@ -409,7 +409,7 @@ def cleanup_expired_bookings():
                 logger.warning(f"Failed to send expiration notifications for booking {booking.id}: {e}")
         
         db.commit()
-        logger.info(f"Marked {len(expired_requests)} unaccepted requests and {len(unpaid_bookings)} unpaid bookings as expired")
+        logger.info(f"Marked {len(expired_requests)} unaccepted requests and {len(unpaid_bookings)} unpaid bookings as cancelled due to expiration")
         
     except Exception as e:
         logger.error(f"Error in booking cleanup: {e}")
