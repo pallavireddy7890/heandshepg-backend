@@ -403,6 +403,41 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return response
 
 
+from fastapi.exceptions import RequestValidationError
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    detail_msg = "Validation error"
+    if errors:
+        error_msgs = []
+        for err in errors:
+            msg = err.get("msg", "")
+            # Strip Pydantic's default "Value error, " prefix
+            if msg.startswith("Value error, "):
+                msg = msg[len("Value error, "):]
+            
+            # If it's a missing field, make the message user-friendly
+            if err.get("type") == "missing":
+                field = err.get("loc", [])[-1] if err.get("loc") else "field"
+                msg = f"{field} is required"
+                
+            error_msgs.append(msg)
+        
+        # Join multiple errors with a semicolon
+        detail_msg = "; ".join(error_msgs)
+        
+    origin = request.headers.get("origin", "")
+    response = JSONResponse(
+        status_code=422,
+        content={"detail": detail_msg},
+    )
+    if origin in origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled Exception")

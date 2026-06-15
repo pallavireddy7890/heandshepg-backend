@@ -23,6 +23,7 @@ from app.schemas import (
     ProfileResponse,
     AuthResponse,
     AppRoleEnum,
+    ChangePasswordRequest,
 )
 from app.utils.security import (
     verify_password,
@@ -884,11 +885,7 @@ async def reset_password(data: PasswordResetConfirm, db: Session = Depends(get_d
     return {"message": "Password reset successfully"}
 
 
-from pydantic import BaseModel, Field
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str = Field(..., min_length=8)
+# ChangePasswordRequest imported from app.schemas
 
 
 @router.post("/change-password")

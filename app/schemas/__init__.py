@@ -21,6 +21,7 @@ from app.schemas.user import (
     KycStatusEnum,
     NotificationStatus,
     ProfileUpdateResponse,
+    ChangePasswordRequest,
 )
 from app.schemas.property import (
     PropertyCreate,
@@ -146,4 +147,5 @@ __all__ = [
     # Notification status schemas
     "NotificationStatus",
     "ProfileUpdateResponse",
+    "ChangePasswordRequest",
 ]

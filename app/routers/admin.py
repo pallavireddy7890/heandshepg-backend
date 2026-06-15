@@ -602,6 +602,16 @@ async def setup_admin_role(
                 detail="Password is required to create new admin user"
             )
         
+        # Validate password strength
+        from app.utils.security import validate_password_strength
+        try:
+            validate_password_strength(password)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e)
+            )
+        
         # Create user
         hashed_password = get_password_hash(password)
         new_user = User(

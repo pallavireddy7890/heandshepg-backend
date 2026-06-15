@@ -1,9 +1,10 @@
 """Pydantic schemas for user-related data."""
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime, date
 from enum import Enum
+from app.utils.security import validate_password_strength
 
 
 class AppRoleEnum(str, Enum):
@@ -27,6 +28,11 @@ class UserSignUp(BaseModel):
     phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$", description="Phone number (10 digits) or with country code (+...)")
     role: AppRoleEnum = AppRoleEnum.customer
     referral_code: Optional[str] = None
+
+    @field_validator('password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)
 
 
 class UserLogin(BaseModel):
@@ -70,6 +76,11 @@ class PasswordResetConfirm(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)
 
+    @field_validator('new_password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)
+
 
 # User Schemas
 class UserBase(BaseModel):
@@ -79,6 +90,11 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
     name: str
+
+    @field_validator('password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)
 
 
 class UserResponse(UserBase):
@@ -278,3 +294,13 @@ class ProfileUpdateResponse(BaseModel):
     profile: ProfileResponse
     notification_status: Optional[NotificationStatus] = None
     message: str = "Profile updated successfully"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator('new_password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)

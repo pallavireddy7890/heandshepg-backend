@@ -31,6 +31,35 @@ def get_password_hash(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
+def validate_password_strength(password: str) -> str:
+    """Validate that the password is strong.
+    
+    Requirements:
+    - At least 8 characters long
+    - Contains at least one uppercase letter
+    - Contains at least one lowercase letter
+    - Contains at least one digit
+    - Contains at least one special character (non-alphanumeric character, excluding whitespace)
+    """
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long.")
+    
+    if not any(char.isupper() for char in password):
+        raise ValueError("Password must contain at least one uppercase letter.")
+        
+    if not any(char.islower() for char in password):
+        raise ValueError("Password must contain at least one lowercase letter.")
+        
+    if not any(char.isdigit() for char in password):
+        raise ValueError("Password must contain at least one digit.")
+        
+    # Check for at least one special character (non-alphanumeric, ignoring spaces)
+    if not any(not char.isalnum() and not char.isspace() for char in password):
+        raise ValueError("Password must contain at least one special character (e.g. !, @, #, $, %, etc.).")
+        
+    return password
+
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token."""
     to_encode = data.copy()

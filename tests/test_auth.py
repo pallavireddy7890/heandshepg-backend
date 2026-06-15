@@ -63,6 +63,34 @@ class TestSignup:
         response = client.post("/api/auth/signup", json=test_user_data)
         
         assert response.status_code == 422  # Validation error
+        
+    def test_signup_no_uppercase_password(self, client: TestClient, test_user_data: dict):
+        """Test signup fails with password missing uppercase letters."""
+        test_user_data["password"] = "testpass123!"
+        response = client.post("/api/auth/signup", json=test_user_data)
+        assert response.status_code == 422
+        assert "uppercase" in response.text
+        
+    def test_signup_no_lowercase_password(self, client: TestClient, test_user_data: dict):
+        """Test signup fails with password missing lowercase letters."""
+        test_user_data["password"] = "TESTPASS123!"
+        response = client.post("/api/auth/signup", json=test_user_data)
+        assert response.status_code == 422
+        assert "lowercase" in response.text
+        
+    def test_signup_no_digit_password(self, client: TestClient, test_user_data: dict):
+        """Test signup fails with password missing digits."""
+        test_user_data["password"] = "TestPass!"
+        response = client.post("/api/auth/signup", json=test_user_data)
+        assert response.status_code == 422
+        assert "digit" in response.text
+        
+    def test_signup_no_special_char_password(self, client: TestClient, test_user_data: dict):
+        """Test signup fails with password missing special characters."""
+        test_user_data["password"] = "TestPass123"
+        response = client.post("/api/auth/signup", json=test_user_data)
+        assert response.status_code == 422
+        assert "special character" in response.text
     
     def test_signup_owner_role(self, client: TestClient, test_owner_data: dict):
         """Test owner signup creates pending approval state."""
