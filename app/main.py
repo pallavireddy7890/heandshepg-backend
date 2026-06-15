@@ -176,6 +176,9 @@ async def lifespan(app: FastAPI):
         # Sync missing columns for ALL tables (safe to run on every startup)
         with engine.connect() as conn:
             sync_statements = [
+                # === USERS ===
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_online BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ DEFAULT NOW()",
                 # === PROFILES ===
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)",
                 "ALTER TABLE profiles ADD COLUMN IF NOT EXISTS business_name VARCHAR(255)",

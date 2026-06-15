@@ -306,7 +306,7 @@ from datetime import datetime
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".csv", ".ppt", ".pptx", ".zip"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 
 

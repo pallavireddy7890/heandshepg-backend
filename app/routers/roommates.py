@@ -137,6 +137,8 @@ class ChatListResponse(BaseModel):
     is_blocked: bool = False
     blocked_by_me: bool = False
     blocked_by_them: bool = False
+    is_online: bool = False
+    last_seen_at: Optional[datetime] = None
 
 
 # ========== Helpers ==========
@@ -534,6 +536,8 @@ async def get_chat_list(
         # Check block status
         block_info = check_block_status(db, current_user.id, other_user_id)
 
+        other_user = db.query(User).filter(User.id == other_user_id).first()
+
         result.append(ChatListResponse(
             user_id=other_user_id,
             user_name=other_profile.name if other_profile else "Unknown",
@@ -544,6 +548,8 @@ async def get_chat_list(
             is_blocked=block_info["is_blocked"],
             blocked_by_me=block_info["blocked_by_me"],
             blocked_by_them=block_info["blocked_by_them"],
+            is_online=other_user.is_online if other_user else False,
+            last_seen_at=other_user.last_seen_at if other_user else None,
         ))
         
     # Sort by last message time

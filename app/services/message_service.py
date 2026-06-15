@@ -30,6 +30,8 @@ class MessageService:
                 # Get last message
                 last_message = db.query(Message).filter(Message.conversation_id == conv.id).order_by(Message.created_at.desc()).first()
                 
+                other_user = db.query(User).filter(User.id == other_user_id).first()
+                
                 conv_dict = {
                     "id": conv.id,
                     "property_id": conv.property_id,
@@ -40,7 +42,9 @@ class MessageService:
                     "property_title": property_obj.title if property_obj else None,
                     "other_user_name": other_profile.name if other_profile else "User",
                     "other_user_photo": other_profile.profile_photo if other_profile else None,
-                    "messages": [last_message] if last_message else []
+                    "messages": [last_message] if last_message else [],
+                    "is_online": other_user.is_online if other_user else False,
+                    "last_seen_at": other_user.last_seen_at if other_user else None,
                 }
                 
                 result.append(conv_dict)
@@ -80,6 +84,8 @@ class MessageService:
             other_profile = ProfileRepository.get_profile_by_user_id(db, other_user_id)
             
             logger.info("Successfully fetched conversation %s with %d messages", conversation_id, len(messages))
+            other_user = db.query(User).filter(User.id == other_user_id).first()
+            
             return {
                 "id": conversation.id,
                 "property_id": conversation.property_id,
@@ -90,7 +96,9 @@ class MessageService:
                 "property_title": property_obj.title if property_obj else None,
                 "other_user_name": other_profile.name if other_profile else "User",
                 "other_user_photo": other_profile.profile_photo if other_profile else None,
-                "messages": messages
+                "messages": messages,
+                "is_online": other_user.is_online if other_user else False,
+                "last_seen_at": other_user.last_seen_at if other_user else None,
             }
         except HTTPException:
             raise

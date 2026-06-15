@@ -31,6 +31,8 @@ class User(Base):
     is_verified = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    is_online = Column(Boolean, default=False)
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     profile = relationship("Profile", back_populates="user", uselist=False, cascade="all, delete-orphan")

@@ -54,6 +54,37 @@ manager = ConnectionManager()
 notification_manager = ConnectionManager()
 
 
+def get_chat_partners(db: Session, user_id: str) -> List[str]:
+    from app.models import Conversation
+    from app.models.features import RoommateMessage
+    from sqlalchemy import or_
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        return []
+        
+    partners = set()
+    # 1. From regular conversations
+    convs = db.query(Conversation).filter(
+        or_(Conversation.customer_id == user_uuid, Conversation.owner_id == user_uuid)
+    ).all()
+    for c in convs:
+        other = c.owner_id if c.customer_id == user_uuid else c.customer_id
+        if other:
+            partners.add(str(other))
+            
+    # 2. From roommate messages
+    msgs = db.query(RoommateMessage).filter(
+        or_(RoommateMessage.sender_id == user_uuid, RoommateMessage.receiver_id == user_uuid)
+    ).all()
+    for m in msgs:
+        other = m.receiver_id if m.sender_id == user_uuid else m.sender_id
+        if other:
+            partners.add(str(other))
+            
+    return list(partners)
+
+
 @router.websocket("/ws/chat/{user_id}")
 async def websocket_chat(
     websocket: WebSocket,
@@ -73,7 +104,28 @@ async def websocket_chat(
         await websocket.close(code=4001, reason="Authentication failed")
         return
     
+    is_first_connection = user_id not in manager.active_connections
     await manager.connect(websocket, user_id)
+    
+    if is_first_connection:
+        db = next(get_db())
+        try:
+            user = db.query(User).filter(User.id == UUID(user_id)).first()
+            if user:
+                user.is_online = True
+                db.commit()
+                
+                partners = get_chat_partners(db, user_id)
+                await manager.broadcast_to_users({
+                    "type": "user_status",
+                    "user_id": user_id,
+                    "is_online": True,
+                    "last_seen_at": datetime.utcnow().isoformat()
+                }, partners)
+        except Exception:
+            pass
+        finally:
+            db.close()
     
     try:
         while True:
@@ -108,8 +160,50 @@ async def websocket_chat(
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
+        if user_id not in manager.active_connections:
+            db = next(get_db())
+            try:
+                user = db.query(User).filter(User.id == UUID(user_id)).first()
+                if user:
+                    user.is_online = False
+                    now = datetime.utcnow()
+                    user.last_seen_at = now
+                    db.commit()
+                    
+                    partners = get_chat_partners(db, user_id)
+                    await manager.broadcast_to_users({
+                        "type": "user_status",
+                        "user_id": user_id,
+                        "is_online": False,
+                        "last_seen_at": now.isoformat()
+                    }, partners)
+            except Exception:
+                pass
+            finally:
+                db.close()
     except Exception as e:
         manager.disconnect(websocket, user_id)
+        if user_id not in manager.active_connections:
+            db = next(get_db())
+            try:
+                user = db.query(User).filter(User.id == UUID(user_id)).first()
+                if user:
+                    user.is_online = False
+                    now = datetime.utcnow()
+                    user.last_seen_at = now
+                    db.commit()
+                    
+                    partners = get_chat_partners(db, user_id)
+                    await manager.broadcast_to_users({
+                        "type": "user_status",
+                        "user_id": user_id,
+                        "is_online": False,
+                        "last_seen_at": now.isoformat()
+                    }, partners)
+            except Exception:
+                pass
+            finally:
+                db.close()
 
 
 @router.websocket("/ws/notifications/{user_id}")
