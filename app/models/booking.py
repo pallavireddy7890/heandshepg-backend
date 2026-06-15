@@ -19,6 +19,7 @@ class BookingStatus(str, enum.Enum):
     cancelled = "cancelled"
     vacate_requested = "vacate_requested"
     vacated = "vacated"
+    rejected = "rejected"
 
 
 class PaymentStatus(str, enum.Enum):
@@ -56,7 +57,7 @@ class Booking(Base):
     start_date = Column(Date, nullable=False)
     end_date = Column(Date)
     status = Column(ENUM('requested', 'accepted', 'paid', 'checked_in', 'active', 'completed', 'cancelled', 
-                         'vacate_requested', 'vacated',
+                         'vacate_requested', 'vacated', 'rejected',
                          name='booking_status', create_type=False), default='requested', index=True)
     amount = Column(Integer, nullable=False)
     security_deposit = Column(Integer, nullable=False)
@@ -71,6 +72,7 @@ class Booking(Base):
     payment_id = Column(UUID(as_uuid=True))
     cancelled_at = Column(DateTime(timezone=True))
     cancel_reason = Column(Text)
+    rejection_reason = Column(Text)
     customer_documents = Column(ARRAY(Text))
     # Snapshot of customer info - preserved even if customer deletes account
     customer_snapshot = Column(JSONB, nullable=True)  # {name, email, phone}

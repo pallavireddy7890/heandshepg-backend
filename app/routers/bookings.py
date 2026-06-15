@@ -606,11 +606,13 @@ async def update_booking_status(
     
     # Owners can accept/reject requested bookings
     if is_owner and booking.status == "requested":
-        if new_status not in ["accepted", "cancelled"]:
+        if new_status not in ["accepted", "cancelled", "rejected"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid status transition"
             )
+        if new_status in ["cancelled", "rejected"] and status_data.rejection_reason:
+            booking.rejection_reason = status_data.rejection_reason
     
     if new_status == "completed" and booking.status != "completed" and booking.room_id:
         # Sync vacancy using centralized service
@@ -628,7 +630,7 @@ async def update_booking_status(
         if new_status == "accepted":
             await notify_booking_accepted(db, booking.customer_id, property_title, booking.id)
         elif new_status in ["cancelled", "rejected"]:
-            await notify_booking_rejected(db, booking.customer_id, property_title)
+            await notify_booking_rejected(db, booking.customer_id, property_title, rejection_reason=booking.rejection_reason)
     except Exception:
         pass  # Don't fail status update if notification fails
     

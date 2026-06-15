@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI):
         with engine.connect() as conn:
             enums = {
                 "gender_preference": ("male", "female", "mixed"),
-                "booking_status": ("requested", "accepted", "paid", "checked_in", "active", "completed", "cancelled", "vacate_requested", "vacated"),
+                "booking_status": ("requested", "accepted", "paid", "checked_in", "active", "completed", "cancelled", "vacate_requested", "vacated", "rejected"),
                 "payment_status": ("pending", "completed", "failed", "refunded", "pending_verification"),
                 "payment_type": ("booking", "monthly_rent", "refund", "commission"),
                 "invoice_status": ("pending", "paid", "overdue", "cancelled"),
@@ -123,10 +123,10 @@ async def lifespan(app: FastAPI):
                 values_str = ", ".join(f"'{v}'" for v in values)
                 try:
                     conn.execute(text(
-                        f"DO $$ BEGIN "
-                        f"CREATE TYPE {enum_name} AS ENUM ({values_str}); "
-                        f"EXCEPTION WHEN duplicate_object THEN NULL; "
-                        f"END $$;"
+                         f"DO $$ BEGIN "
+                         f"CREATE TYPE {enum_name} AS ENUM ({values_str}); "
+                         f"EXCEPTION WHEN duplicate_object THEN NULL; "
+                         f"END $$;"
                     ))
                 except Exception as e:
                     logger.warning(f"Enum {enum_name} creation note: {e}")
@@ -137,6 +137,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TYPE transaction_status ADD VALUE IF NOT EXISTS 'rejected'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_requested'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacated'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'rejected'",
                 "ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'",
                 "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'upcoming'",
                 "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'active'",
@@ -159,6 +160,15 @@ async def lifespan(app: FastAPI):
                 conn.commit()
             except Exception:
                 pass
+
+        # Ensure rejection_reason column exists in bookings table
+        with engine.connect() as conn:
+            try:
+                conn.execute(text('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rejection_reason TEXT;'))
+                conn.commit()
+                logger.info("Added rejection_reason column to bookings table (if not exists)")
+            except Exception as e:
+                logger.warning(f"Note on adding rejection_reason column: {e}")
         
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ready")

@@ -14,6 +14,9 @@ class BookingStatusEnum(str, Enum):
     active = "active"
     completed = "completed"
     cancelled = "cancelled"
+    vacate_requested = "vacate_requested"
+    vacated = "vacated"
+    rejected = "rejected"
 
 
 class PaymentStatusEnum(str, Enum):
@@ -52,6 +55,7 @@ class BookingCreate(BaseModel):
 
 class BookingStatusUpdate(BaseModel):
     status: BookingStatusEnum
+    rejection_reason: Optional[str] = None
 
 
 class BookingCancelRequest(BaseModel):
@@ -93,6 +97,7 @@ class BookingResponse(BaseModel):
     last_payment_date: Optional[datetime] = None
     cancelled_at: Optional[datetime]
     cancel_reason: Optional[str]
+    rejection_reason: Optional[str] = None
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
     vacate_details: Optional[VacateDetails] = None

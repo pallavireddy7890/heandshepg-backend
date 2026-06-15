@@ -158,13 +158,16 @@ async def notify_booking_accepted(db: Session, customer_id: uuid.UUID, property_
     )
 
 
-async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_title: str):
+async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_title: str, rejection_reason: str = None):
     """Notify customer when their booking is rejected."""
+    msg = f"Unfortunately, your booking for {property_title} was not approved."
+    if rejection_reason:
+        msg += f" Reason: {rejection_reason}"
     return await create_notification(
         db=db,
         user_id=customer_id,
         title="Booking Declined",
-        message=f"Unfortunately, your booking for {property_title} was not approved.",
+        message=msg,
         notification_type="warning",
         link="/bookings"
     )
