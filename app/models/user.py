@@ -1,5 +1,5 @@
 """SQLAlchemy models for users, profiles, and roles."""
-from sqlalchemy import Column, String, Boolean, DateTime, Date, ForeignKey, Enum, Text, ARRAY, Integer
+from sqlalchemy import Column, String, Boolean, DateTime, Date, ForeignKey, Enum, Text, ARRAY, Integer, Float
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -31,6 +31,8 @@ class User(Base):
     is_verified = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    is_online = Column(Boolean, default=False)
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     profile = relationship("Profile", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -120,6 +122,7 @@ class Profile(Base):
     
     # Hosting experience - date when owner started hosting (for calculating years hosting)
     hosting_since = Column(Date)
+    response_rate = Column(Float, default=10.0)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -2,7 +2,8 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import bcrypt
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -33,6 +34,7 @@ class AnnouncementResponse(BaseModel):
     title: str
     message: str
     priority: str
+    is_admin: bool = False
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     is_active: bool
@@ -48,9 +50,22 @@ class AnnouncementListResponse(BaseModel):
     total: int
 
 
+def send_emails_bg(emails: List[str], subject: str, body_html: str):
+    for email in emails:
+        try:
+            NotificationService.send_email(
+                to_email=email,
+                subject=subject,
+                body_html=body_html
+            )
+        except Exception:
+            pass
+
+
 @router.post("/", response_model=AnnouncementResponse)
 async def create_announcement(
     data: AnnouncementCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -140,7 +155,7 @@ async def create_announcement(
     }
     priority_color = priority_colors.get(data.priority, "#3b82f6")
     
-    for email in tenant_emails:
+    if tenant_emails:
         email_body = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -168,11 +183,8 @@ async def create_announcement(
         </html>
         """
         
-        NotificationService.send_email(
-            to_email=email,
-            subject=f"[{data.priority.upper()}] {data.title} - He&She PG",
-            body_html=email_body
-        )
+        subject = f"[{data.priority.upper()}] {data.title} - He&She PG"
+        background_tasks.add_task(send_emails_bg, list(tenant_emails), subject, email_body)
     
     return AnnouncementResponse(
         id=announcement.id,
@@ -181,6 +193,7 @@ async def create_announcement(
         title=announcement.title,
         message=announcement.message,
         priority=announcement.priority,
+        is_admin=announcement.is_admin,
         is_active=announcement.is_active,
         created_at=announcement.created_at.isoformat(),
         property_title=property_title
@@ -192,7 +205,7 @@ async def get_owner_announcements(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get all announcements created by the current owner."""
+    """Get all announcements for the current owner, including system-wide/owner admin announcements."""
     role = get_user_role(current_user, db)
     if role != "owner":
         raise HTTPException(
@@ -200,8 +213,14 @@ async def get_owner_announcements(
             detail="Only property owners can access this endpoint"
         )
     
+    # Return owner's own announcements or admin announcements targeted to owners/all
     announcements = db.query(Announcement).filter(
-        Announcement.owner_id == current_user.id
+        (Announcement.owner_id == current_user.id) |
+        (
+            (Announcement.is_admin == True) &
+            (Announcement.is_active == True) &
+            Announcement.target_audience.in_(["all", "owners"])
+        )
     ).order_by(desc(Announcement.created_at)).all()
     
     result = []
@@ -210,6 +229,8 @@ async def get_owner_announcements(
         if ann.property_id:
             prop = db.query(Property).filter(Property.id == ann.property_id).first()
             property_title = prop.title if prop else None
+        elif ann.is_admin:
+            property_title = "System Announcement"
         
         result.append(AnnouncementResponse(
             id=ann.id,
@@ -218,6 +239,7 @@ async def get_owner_announcements(
             title=ann.title,
             message=ann.message,
             priority=ann.priority,
+            is_admin=ann.is_admin,
             start_time=ann.start_time.isoformat() if ann.start_time else None,
             end_time=ann.end_time.isoformat() if ann.end_time else None,
             is_active=ann.is_active,
@@ -240,18 +262,16 @@ async def get_tenant_announcements(
         Booking.status.in_(['paid', 'active', 'checked_in'])
     ).all()
     
-    if not active_bookings:
-        return AnnouncementListResponse(announcements=[], total=0)
+    property_ids = [b.property_id for b in active_bookings] if active_bookings else []
+    owner_ids = [b.owner_id for b in active_bookings] if active_bookings else []
     
-    property_ids = [b.property_id for b in active_bookings]
-    owner_ids = [b.owner_id for b in active_bookings]
-    
-    # Get announcements for these properties or from these owners (for all-property announcements)
+    # Get announcements for these properties, from these owners, or admin announcements
     announcements = db.query(Announcement).filter(
         Announcement.is_active == True,
         (
             Announcement.property_id.in_(property_ids) |
-            (Announcement.property_id.is_(None) & Announcement.owner_id.in_(owner_ids))
+            (Announcement.property_id.is_(None) & Announcement.owner_id.in_(owner_ids)) |
+            ((Announcement.is_admin == True) & Announcement.target_audience.in_(["all", "tenants"]))
         )
     ).order_by(desc(Announcement.created_at)).limit(20).all()
     
@@ -261,6 +281,8 @@ async def get_tenant_announcements(
         if ann.property_id:
             prop = db.query(Property).filter(Property.id == ann.property_id).first()
             property_title = prop.title if prop else None
+        elif ann.is_admin:
+            property_title = "System Announcement"
         
         result.append(AnnouncementResponse(
             id=ann.id,
@@ -269,6 +291,7 @@ async def get_tenant_announcements(
             title=ann.title,
             message=ann.message,
             priority=ann.priority,
+            is_admin=ann.is_admin,
             start_time=ann.start_time.isoformat() if ann.start_time else None,
             end_time=ann.end_time.isoformat() if ann.end_time else None,
             is_active=ann.is_active,
@@ -301,3 +324,69 @@ async def delete_announcement(
     db.commit()
     
     return {"message": "Announcement deleted successfully"}
+
+
+@router.put("/{announcement_id}", response_model=AnnouncementResponse)
+async def update_announcement(
+    announcement_id: UUID,
+    data: AnnouncementCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update an announcement (owner only)."""
+    announcement = db.query(Announcement).filter(
+        Announcement.id == announcement_id,
+        Announcement.owner_id == current_user.id
+    ).first()
+    
+    if not announcement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Announcement not found or you don't have permission to edit it"
+        )
+    
+    # If property_id is specified, verify ownership
+    if data.property_id:
+        property_obj = db.query(Property).filter(
+            Property.id == data.property_id,
+            Property.owner_id == current_user.id
+        ).first()
+        if not property_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Property not found or you don't own it"
+            )
+            
+    # Parse start_time and end_time, with defaults
+    start_time = datetime.fromisoformat(data.start_time.replace('Z', '+00:00')) if data.start_time else datetime.utcnow()
+    end_time = datetime.fromisoformat(data.end_time.replace('Z', '+00:00')) if data.end_time else (start_time + timedelta(hours=24))
+
+    announcement.property_id = data.property_id
+    announcement.title = data.title
+    announcement.message = data.message
+    announcement.priority = data.priority
+    announcement.start_time = start_time
+    announcement.end_time = end_time
+
+    db.commit()
+    db.refresh(announcement)
+    
+    property_title = None
+    if announcement.property_id:
+        prop = db.query(Property).filter(Property.id == announcement.property_id).first()
+        property_title = prop.title if prop else None
+
+    return AnnouncementResponse(
+        id=announcement.id,
+        owner_id=announcement.owner_id,
+        property_id=announcement.property_id,
+        title=announcement.title,
+        message=announcement.message,
+        priority=announcement.priority,
+        is_admin=announcement.is_admin,
+        start_time=announcement.start_time.isoformat() if announcement.start_time else None,
+        end_time=announcement.end_time.isoformat() if announcement.end_time else None,
+        is_active=announcement.is_active,
+        created_at=announcement.created_at.isoformat(),
+        property_title=property_title
+    )

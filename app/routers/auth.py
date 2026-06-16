@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-
+from pydantic import BaseModel as PydanticModel
 from app.database import get_db
 from app.models import User, Profile, UserRole, AppRole
 from app.schemas import (
@@ -16,11 +16,14 @@ from app.schemas import (
     UserLogin,
     Token,
     PasswordReset,
+    ForgotPasswordPhoneRequest,
+    VerifyPasswordResetOTPRequest,
     PasswordResetConfirm,
     UserResponse,
     ProfileResponse,
     AuthResponse,
     AppRoleEnum,
+    ChangePasswordRequest,
 )
 from app.utils.security import (
     verify_password,
@@ -210,8 +213,6 @@ async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
         "sms_sent": bool(phone_clean)
     }
 
-
-from pydantic import BaseModel as PydanticModel
 
 class VerifyEmailRequest(PydanticModel):
     email: str
@@ -683,6 +684,173 @@ async def forgot_password(data: PasswordReset, db: Session = Depends(get_db)):
     return {"message": "If the email exists, a password reset link has been sent"}
 
 
+@router.post("/forgot-password-phone")
+async def forgot_password_phone(data: ForgotPasswordPhoneRequest, db: Session = Depends(get_db)):
+    """Send password reset OTP via SMS."""
+    from app.services.email_verification_service import EmailVerificationService
+    from app.services.notification_service import NotificationService
+    from app.models.password_reset_otp import PasswordResetOTP
+    
+    phone_clean = normalize_phone(data.phone)
+    if not phone_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid phone number"
+        )
+        
+    # Find user profile with this phone number
+    pv = phone_variants(phone_clean)
+    profile = db.query(Profile).filter(Profile.phone.in_(pv)).first() if pv else None
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No account found with this phone number."
+        )
+        
+    user = db.query(User).filter(User.id == profile.user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User account not found."
+        )
+        
+    # Check rate limiting / delete old pending OTPs for this phone number
+    db.query(PasswordResetOTP).filter(
+        PasswordResetOTP.phone == phone_clean,
+        PasswordResetOTP.is_verified == False
+    ).delete()
+    db.commit()
+    
+    # Generate 6-digit OTP
+    otp_code = EmailVerificationService.generate_otp()
+    logger.info(f"Generated Password Reset OTP for {phone_clean}: '{otp_code}'")
+    
+    # Create OTP record
+    db_otp = PasswordResetOTP(
+        phone=phone_clean,
+        otp_code=otp_code,
+        expires_at=PasswordResetOTP.get_expiry_time()
+    )
+    db.add(db_otp)
+    db.commit()
+    
+    # Send OTP SMS
+    message = f"He&She PG: Your password reset verification code is {otp_code}. Valid for 10 minutes."
+    sms_sent, sms_error = NotificationService.send_sms(phone_clean, message)
+    
+    # For local testing, if Twilio is not configured or fails, we write it to email/sms logs
+    if not sms_sent:
+        log_msg = f"\n[{datetime.now()}] --- LOCAL BYPASS: PASSWORD RESET OTP READY ---\n"
+        log_msg += f"Phone: {phone_clean}\nOTP: {otp_code}\n"
+        log_msg += f"SMS Error: {sms_error or 'Twilio not configured'}\n"
+        log_msg += "---------------------------------------\n"
+        try:
+            import os
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/sms_debug.log", "a") as f:
+                f.write(log_msg)
+        except Exception:
+            pass
+        print(log_msg)
+        
+    return {
+        "message": "Verification OTP sent to your phone number",
+        "phone": phone_clean,
+        "expires_in_minutes": PasswordResetOTP.OTP_EXPIRY_MINUTES
+    }
+
+
+@router.post("/verify-reset-otp")
+async def verify_reset_otp(data: VerifyPasswordResetOTPRequest, db: Session = Depends(get_db)):
+    """Verify password reset OTP and return reset token."""
+    from app.models.password_reset_otp import PasswordResetOTP
+    
+    phone_clean = normalize_phone(data.phone)
+    if not phone_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid phone number"
+        )
+        
+    # Find active verification record
+    verification = db.query(PasswordResetOTP).filter(
+        PasswordResetOTP.phone == phone_clean,
+        PasswordResetOTP.is_verified == False
+    ).order_by(PasswordResetOTP.created_at.desc()).first()
+    
+    if not verification:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No pending password reset request found for this phone number."
+        )
+        
+    # Check if expired
+    if verification.is_expired():
+        db.delete(verification)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The verification code has expired. Please request a new code."
+        )
+        
+    # Check max attempts
+    if verification.has_max_attempts():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Too many incorrect attempts. Please request a new code."
+        )
+        
+    # Clean codes
+    otp_code_clean = str(data.otp_code).strip()
+    stored_otp_clean = str(verification.otp_code).strip()
+    
+    if stored_otp_clean != otp_code_clean:
+        verification.increment_attempts()
+        db.commit()
+        remaining = verification.MAX_ATTEMPTS - verification.attempts
+        if remaining > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Incorrect code. You have {remaining} {'attempt' if remaining == 1 else 'attempts'} remaining."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Too many incorrect attempts. Please request a new code."
+            )
+            
+    # Success! Find user to generate token
+    pv = phone_variants(phone_clean)
+    profile = db.query(Profile).filter(Profile.phone.in_(pv)).first() if pv else None
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User profile not found."
+        )
+        
+    user = db.query(User).filter(User.id == profile.user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User account not found."
+        )
+        
+    # Generate password reset token
+    reset_token = create_access_token(
+        data={"sub": str(user.id), "type": "password_reset"},
+        expires_delta=timedelta(hours=1)
+    )
+    
+    # Mark as verified and clean up
+    db.delete(verification)
+    db.commit()
+    
+    return {
+        "message": "OTP verified successfully",
+        "reset_token": reset_token
+    }
+
+
 @router.post("/resetpassword")
 async def reset_password(data: PasswordResetConfirm, db: Session = Depends(get_db)):
     """Reset password with token."""
@@ -717,11 +885,7 @@ async def reset_password(data: PasswordResetConfirm, db: Session = Depends(get_d
     return {"message": "Password reset successfully"}
 
 
-from pydantic import BaseModel, Field
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str = Field(..., min_length=8)
+# ChangePasswordRequest imported from app.schemas
 
 
 @router.post("/change-password")

@@ -2,6 +2,7 @@
 from app.utils.security import (
     verify_password,
     get_password_hash,
+    validate_password_strength,
     create_access_token,
     decode_access_token,
     get_current_user,
@@ -16,6 +17,7 @@ from app.utils.security import (
 __all__ = [
     "verify_password",
     "get_password_hash",
+    "validate_password_strength",
     "create_access_token",
     "decode_access_token",
     "get_current_user",

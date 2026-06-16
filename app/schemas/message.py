@@ -43,6 +43,8 @@ class ConversationWithMessages(ConversationResponse):
     property_title: Optional[str] = None
     other_user_name: Optional[str] = None
     other_user_photo: Optional[str] = None
+    is_online: bool = False
+    last_seen_at: Optional[datetime] = None
 
 
 # Notification Schemas

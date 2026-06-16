@@ -1,9 +1,10 @@
 """Pydantic schemas for user-related data."""
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime, date
 from enum import Enum
+from app.utils.security import validate_password_strength
 
 
 class AppRoleEnum(str, Enum):
@@ -28,6 +29,11 @@ class UserSignUp(BaseModel):
     role: AppRoleEnum = AppRoleEnum.customer
     referral_code: Optional[str] = None
 
+    @field_validator('password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)
+
 
 class UserLogin(BaseModel):
     identifier: str  # Can be email or phone number
@@ -48,9 +54,32 @@ class PasswordReset(BaseModel):
     email: EmailStr
 
 
+class ForgotPasswordPhoneRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$")
+
+
+class VerifyPasswordResetOTPRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$")
+    otp_code: str = Field(..., min_length=6, max_length=6)
+
+
+class SendPhoneOTPRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$")
+
+
+class VerifyPhoneOTPRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^(\d{10}|\+\d{10,14})$")
+    otp_code: str = Field(..., min_length=6, max_length=6)
+
+
 class PasswordResetConfirm(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)
+
+    @field_validator('new_password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)
 
 
 # User Schemas
@@ -61,6 +90,11 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
     name: str
+
+    @field_validator('password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)
 
 
 class UserResponse(UserBase):
@@ -135,6 +169,7 @@ class ProfileBase(BaseModel):
     dl_back_url: Optional[str] = None
     college_company_id_url: Optional[str] = None
     profile_verification_status: Optional[str] = "pending"
+    response_rate: Optional[float] = 10.0
     # NOTE: Owner availability fields disabled until migration is run
     # owner_available: Optional[bool] = True
     # available_from: Optional[str] = None
@@ -209,6 +244,7 @@ class ProfileUpdate(BaseModel):
     
     # Hosting experience (for owners)
     hosting_since: Optional[date] = None
+    response_rate: Optional[float] = None
 
 
 class ProfileResponse(ProfileBase):
@@ -260,3 +296,13 @@ class ProfileUpdateResponse(BaseModel):
     profile: ProfileResponse
     notification_status: Optional[NotificationStatus] = None
     message: str = "Profile updated successfully"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator('new_password')
+    @classmethod
+    def password_must_be_strong(cls, v: str) -> str:
+        return validate_password_strength(v)

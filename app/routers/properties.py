@@ -20,11 +20,27 @@ from app.schemas import (
     RoomResponse,
     PropertyFilter,
     GenderPreferenceEnum,
+    PropertyDeletionResponse,
 )
 from app.utils.security import get_current_user, require_owner
 from app.services.vacancy import get_room_availability, get_property_availability
 
 router = APIRouter(prefix="/properties", tags=["Properties"])
+
+
+def sync_property_rent_and_deposit(db: Session, property_id: UUID):
+    """Sync property monthly_rent and deposit columns with its cheapest room."""
+    rooms = db.query(Room).filter(Room.property_id == property_id).all()
+    if rooms:
+        # Prioritize monthly rooms if available
+        monthly_rooms = [r for r in rooms if not r.stay_type or r.stay_type == "monthly"]
+        lead_rooms = monthly_rooms if monthly_rooms else rooms
+        lead_room = min(lead_rooms, key=lambda r: r.price if r.price is not None else float('inf'))
+        prop = db.query(Property).filter(Property.id == property_id).first()
+        if prop and lead_room.price is not None:
+            prop.monthly_rent = lead_room.price
+            prop.deposit = lead_room.deposit
+            db.commit()
 
 
 @router.get("", response_model=List[PropertyListResponse])
@@ -42,7 +58,10 @@ async def list_properties(
 ):
     """List properties with optional filters."""
     from sqlalchemy.orm import joinedload
-    query = db.query(Property).options(joinedload(Property.rooms)).filter(Property.status == "active")
+    query = db.query(Property).options(joinedload(Property.rooms)).filter(
+        Property.status == "active",
+        Property.inactive_at.is_(None)
+    )
     
     if city:
         query = query.filter(Property.city.ilike(f"%{city}%"))
@@ -79,11 +98,36 @@ async def search_properties(
 ):
     """Global search for properties (customer-facing)."""
     from sqlalchemy.orm import joinedload
+    import re
+    
+    # Check if user query implies a specific bed configuration
+    t = q.lower().strip()
+    beds = None
+    if "single" in t or t == "1" or "1 sharing" in t or "1-sharing" in t:
+        beds = 1
+    elif "double" in t or t == "2" or "2 sharing" in t or "2-sharing" in t:
+        beds = 2
+    elif "triple" in t or t == "3" or "3 sharing" in t or "3-sharing" in t:
+        beds = 3
+    elif "four" in t or t == "4" or "4 sharing" in t or "4-sharing" in t:
+        beds = 4
+    else:
+        match = re.search(r"(\d+)\s*sharing", t)
+        if match:
+            beds = int(match.group(1))
+
+    # Construct room filters
+    room_filter = Room.room_type.ilike(f"%{q}%")
+    if beds is not None:
+        room_filter = room_filter | (Room.bed_count == beds)
+
     query = db.query(Property).options(joinedload(Property.rooms)).filter(
-        (Property.status == "active"),
+        Property.status == "active",
+        Property.inactive_at.is_(None),
         (Property.title.ilike(f"%{q}%") | 
          Property.city.ilike(f"%{q}%") | 
-         Property.locality.ilike(f"%{q}%"))
+         Property.locality.ilike(f"%{q}%") |
+         Property.rooms.any(room_filter))
     )
     return query.limit(limit).all()
 
@@ -94,7 +138,10 @@ async def get_property(
     db: Session = Depends(get_db)
 ):
     """Get property details by ID."""
-    property = db.query(Property).filter(Property.id == property_id).first()
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.inactive_at.is_(None)
+    ).first()
     if not property:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -116,6 +163,11 @@ async def get_property(
     response = PropertyDetailResponse.model_validate(property)
     response.rooms = [RoomResponse.model_validate(r) for r in rooms]
     
+    # Calculate response rate
+    from app.routers.host import calculate_host_response_rate
+    host_id = property.owner_id
+    response_rate = calculate_host_response_rate(db, host_id)
+
     # Mask bank account number
     masked_account = "********" + owner_profile.bank_account_number[-4:] if owner_profile and owner_profile.bank_account_number and len(owner_profile.bank_account_number) > 4 else owner_profile.bank_account_number if owner_profile else None
 
@@ -127,6 +179,7 @@ async def get_property(
         "bank_name": owner_profile.bank_name if owner_profile else None,
         "bank_account_masked": masked_account,
         "bank_ifsc_code": owner_profile.bank_ifsc_code if owner_profile else None,
+        "response_rate": response_rate,
     }
     response.average_rating = float(review_stats.avg_rating) if review_stats.avg_rating else None
     response.review_count = review_stats.count or 0
@@ -150,7 +203,10 @@ async def create_property(
         except ValueError:
             pass
 
-    existing_count = db.query(Property).filter(Property.owner_id == current_user.id).count()
+    existing_count = db.query(Property).filter(
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
+    ).count()
     if existing_count >= max_limit:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -179,6 +235,7 @@ async def create_property(
     
     db.commit()
     db.refresh(new_property)
+    sync_property_rent_and_deposit(db, new_property.id)
     return new_property
 
 
@@ -192,7 +249,8 @@ async def update_property(
     """Update a property (owner only)."""
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
@@ -216,27 +274,20 @@ async def update_property(
     return property
 
 
-@router.delete("/{property_id}", dependencies=[Depends(require_owner)])
+@router.delete("/{property_id}", response_model=PropertyDeletionResponse, dependencies=[Depends(require_owner)])
 async def delete_property(
     property_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Delete a property (owner only)."""
-    property = db.query(Property).filter(
-        Property.id == property_id,
-        Property.owner_id == current_user.id
-    ).first()
-    
-    if not property:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Property not found or you don't have permission to delete it"
-        )
-    
-    db.delete(property)
-    db.commit()
-    return {"message": "Property deleted successfully"}
+    from app.services.property_service import PropertyService
+    return await PropertyService.delete_property(
+        db=db,
+        property_id=property_id,
+        current_user_id=current_user.id,
+        is_admin=False
+    )
 
 
 # Room endpoints
@@ -299,7 +350,8 @@ async def create_room(
     """Add a room to a property (owner only)."""
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
@@ -315,7 +367,45 @@ async def create_room(
     db.add(new_room)
     db.commit()
     db.refresh(new_room)
+    sync_property_rent_and_deposit(db, property_id)
     return new_room
+
+
+@router.post("/{property_id}/rooms/bulk", response_model=List[RoomResponse], dependencies=[Depends(require_owner)])
+async def create_rooms_bulk(
+    property_id: UUID,
+    rooms_data: List[RoomCreate],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Add multiple rooms to a property in a single transaction (owner only)."""
+    property = db.query(Property).filter(
+        Property.id == property_id,
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
+    ).first()
+    
+    if not property:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Property not found or you don't have permission"
+        )
+    
+    new_rooms = []
+    for room_data in rooms_data:
+        new_room = Room(
+            property_id=property_id,
+            **room_data.model_dump()
+        )
+        db.add(new_room)
+        new_rooms.append(new_room)
+        
+    db.commit()
+    for new_room in new_rooms:
+        db.refresh(new_room)
+        
+    sync_property_rent_and_deposit(db, property_id)
+    return new_rooms
 
 
 @router.put("/{property_id}/rooms/{room_id}", response_model=RoomResponse, dependencies=[Depends(require_owner)])
@@ -330,7 +420,8 @@ async def update_room(
     # Verify ownership
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
@@ -360,6 +451,7 @@ async def update_room(
     
     db.commit()
     db.refresh(room)
+    sync_property_rent_and_deposit(db, property_id)
     return room
 
 
@@ -374,7 +466,8 @@ async def delete_room(
     # Verify ownership
     property = db.query(Property).filter(
         Property.id == property_id,
-        Property.owner_id == current_user.id
+        Property.owner_id == current_user.id,
+        Property.inactive_at.is_(None)
     ).first()
     
     if not property:
@@ -396,4 +489,5 @@ async def delete_room(
     
     db.delete(room)
     db.commit()
+    sync_property_rent_and_deposit(db, property_id)
     return {"message": "Room deleted successfully"}

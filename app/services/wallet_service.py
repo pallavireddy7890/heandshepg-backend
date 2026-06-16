@@ -16,6 +16,32 @@ from app.services.notification_service import NotificationService
 logger = logging.getLogger(__name__)
 
 
+def parse_transaction_metadata(description: str):
+    import re
+    if not description:
+        return 0, 0, description
+    
+    wallet_contribution = 0
+    total_amount = 0
+    clean_desc = description
+    
+    # Try to find [wallet_contribution:xxx]
+    wc_match = re.search(r'\[wallet_contribution:(\d+)\]', clean_desc)
+    if wc_match:
+        wallet_contribution = int(wc_match.group(1))
+        clean_desc = re.sub(r'\[wallet_contribution:\d+\]', '', clean_desc)
+        
+    # Try to find [total_amount:xxx]
+    ta_match = re.search(r'\[total_amount:(\d+)\]', clean_desc)
+    if ta_match:
+        total_amount = int(ta_match.group(1))
+        clean_desc = re.sub(r'\[total_amount:\d+\]', '', clean_desc)
+        
+    # Clean up any double spaces/brackets
+    clean_desc = clean_desc.strip()
+    return wallet_contribution, total_amount, clean_desc
+
+
 class WalletService:
     """Service for wallet operations."""
     
@@ -53,22 +79,32 @@ class WalletService:
 
     @staticmethod
     def check_payment_overlap(db: Session, booking_id: UUID, period_start: date, period_end: date) -> bool:
-        """Check if any successful rent/total payment exists for the given booking in the specified period."""
-        # Check WalletTransactions
-        # Type 'rent' or 'total', status 'completed'
-        # Within the period (created_at)
+        """Check if rent is fully paid for the given booking in the specified period."""
         start_dt = datetime.combine(period_start, datetime.min.time())
         end_dt = datetime.combine(period_end, datetime.max.time())
         
-        existing = db.query(WalletTransaction).filter(
+        # Get booking to know the full rent amount
+        from app.models.booking import Booking
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            return False
+            
+        payments = db.query(WalletTransaction).filter(
             WalletTransaction.booking_id == booking_id,
             WalletTransaction.status == TransactionStatus.completed,
             WalletTransaction.payment_type.in_(['rent', 'total']),
             WalletTransaction.created_at >= start_dt,
             WalletTransaction.created_at <= end_dt
-        ).first()
+        ).all()
         
-        return existing is not None
+        rent_paid = 0
+        for p in payments:
+            if p.payment_type == 'rent':
+                rent_paid += p.amount / 100
+            elif p.payment_type == 'total':
+                rent_paid += booking.amount
+                
+        return rent_paid >= booking.amount
     
     @staticmethod
     def get_or_create_wallet(db: Session, user_id: UUID) -> Wallet:
@@ -116,7 +152,7 @@ class WalletService:
         online_completed = build_sum_query(True, [TransactionStatus.completed], TransactionType.credit)
         offline_completed = build_sum_query(False, [TransactionStatus.completed], TransactionType.credit)
         
-        online_pending = build_sum_query(True, [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
+        online_pending = build_sum_query(True, [TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
         offline_pending = build_sum_query(False, [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified], TransactionType.credit)
         
         # Withdrawals are not associated with properties, so they are 0 if property_id is provided
@@ -187,16 +223,20 @@ class WalletService:
             amount=amount,
             transaction_type=transaction_type,
             status=TransactionStatus.pending,
+            payment_method='online',
             razorpay_payment_id=razorpay_payment_id,
             razorpay_order_id=razorpay_order_id,
             description=description,
         )
         db.add(transaction)
         
-        # Add to owner's pending_balance
+        # Add to owner's pending_balance (only if it is not a pending online transaction)
         owner_wallet = db.query(Wallet).filter(Wallet.id == wallet_id).first()
         if owner_wallet:
-            owner_wallet.pending_balance += amount
+            pay_method = transaction.payment_method or 'online'
+            is_pending_online = (pay_method == 'online' and transaction.status == TransactionStatus.pending)
+            if not is_pending_online:
+                owner_wallet.pending_balance += amount
         
         db.commit()
         db.refresh(transaction)
@@ -269,6 +309,11 @@ class WalletService:
         # Get transaction and update status
         transaction = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
         if transaction:
+            # Add online transaction amount to owner's pending_balance when transitioning from pending to otp_sent
+            if transaction.status == TransactionStatus.pending and transaction.payment_method == 'online':
+                owner_wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
+                if owner_wallet:
+                    owner_wallet.pending_balance += transaction.amount
             transaction.status = TransactionStatus.otp_sent
         
         db.commit()
@@ -348,6 +393,11 @@ class WalletService:
         # Get transaction and update status
         transaction = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
         if transaction:
+            # Add online transaction amount to owner's pending_balance when transitioning from pending to otp_sent
+            if transaction.status == TransactionStatus.pending and transaction.payment_method == 'online':
+                owner_wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
+                if owner_wallet:
+                    owner_wallet.pending_balance += transaction.amount
             transaction.status = TransactionStatus.otp_sent
         
         db.commit()
@@ -452,8 +502,13 @@ class WalletService:
         if not owner_wallet:
             return False, "Owner wallet not found"
         
+        # Parse wallet contribution from description
+        wallet_contribution = 0
+        if transaction.description:
+            wallet_contribution, _, _ = parse_transaction_metadata(transaction.description)
+        
         # Move from pending_balance to balance
-        owner_wallet.balance += transaction.amount
+        owner_wallet.balance += (transaction.amount + wallet_contribution)
         owner_wallet.pending_balance = max(0, owner_wallet.pending_balance - transaction.amount)
         
         # Update transaction status
@@ -493,6 +548,21 @@ class WalletService:
                 (WalletTransaction.receiver_id == user_id)
             )
         
+        # Exclude debit transactions where the user is NOT the payer (so owner doesn't see tenant's debit transaction)
+        query = query.filter(
+            ~((WalletTransaction.transaction_type == TransactionType.debit) & 
+              (WalletTransaction.payer_id != user_id))
+        )
+        
+        from sqlalchemy import or_
+        # Exclude unpaid/pending online transactions from history
+        query = query.filter(
+            or_(
+                WalletTransaction.payment_method != 'online',
+                WalletTransaction.status != TransactionStatus.pending
+            )
+        )
+        
         if property_id:
             from app.models import Booking
             query = query.join(Booking, WalletTransaction.booking_id == Booking.id).filter(Booking.property_id == property_id)
@@ -507,21 +577,43 @@ class WalletService:
             
             # Get booking and property info for better description
             property_title = None
-            booking_info = None
+            booking_details = None
             if txn.booking_id:
-                from app.models import Booking, Property
+                from app.models import Booking, Property, Room
                 booking = db.query(Booking).filter(Booking.id == txn.booking_id).first()
                 if booking:
                     property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+                    room_obj = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
                     if property_obj:
                         property_title = property_obj.title
-                    booking_info = {
+                    
+                    booking_details = {
+                        "id": str(booking.id),
                         "start_date": booking.start_date.isoformat() if booking.start_date else None,
+                        "end_date": booking.end_date.isoformat() if booking.end_date else None,
                         "status": booking.status,
+                        "stay_type": booking.stay_type,
+                        "duration_days": booking.duration_days,
+                        "amount": booking.amount,
+                        "security_deposit": booking.security_deposit,
+                        "maintenance_charge": booking.maintenance_charge,
+                        "property": {
+                            "title": property_obj.title if property_obj else None,
+                            "locality": property_obj.locality if property_obj else None,
+                            "city": property_obj.city if property_obj else None,
+                        } if property_obj else None,
+                        "room": {
+                            "room_type": room_obj.room_type if room_obj else None,
+                            "room_number": room_obj.room_number if room_obj else None,
+                            "floor_number": room_obj.floor_number if room_obj else None,
+                        } if room_obj else None
                     }
             
+            # Parse metadata
+            wallet_contribution, total_amount, clean_desc = parse_transaction_metadata(txn.description)
+            
             # Create meaningful description
-            description = txn.description
+            description = clean_desc
             if property_title and payer_profile:
                 description = f"Payment from {payer_profile.name} for {property_title}"
             elif property_title:
@@ -531,6 +623,8 @@ class WalletService:
                 "id": str(txn.id),
                 "amount": txn.amount,
                 "amount_inr": txn.amount / 100,
+                "total_amount_inr": total_amount / 100 if total_amount > 0 else txn.amount / 100,
+                "wallet_contribution_inr": wallet_contribution / 100 if wallet_contribution > 0 else 0.0,
                 "transaction_type": txn.transaction_type.value if hasattr(txn.transaction_type, 'value') else txn.transaction_type,
                 "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
                 "payer_name": payer_profile.name if payer_profile else None,
@@ -539,10 +633,12 @@ class WalletService:
                 "description": description,
                 "otp_verified": txn.otp_verified,
                 "payment_method": txn.payment_method,
+                "payment_type": txn.payment_type or "rent",
                 "offline_notes": txn.offline_notes,
                 "offline_reference": txn.offline_reference,
                 "razorpay_payment_id": txn.razorpay_payment_id,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
+                "booking_details": booking_details,
             })
         
         return result

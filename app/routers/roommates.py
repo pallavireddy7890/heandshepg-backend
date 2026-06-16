@@ -1,6 +1,6 @@
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -137,6 +137,8 @@ class ChatListResponse(BaseModel):
     is_blocked: bool = False
     blocked_by_me: bool = False
     blocked_by_them: bool = False
+    is_online: bool = False
+    last_seen_at: Optional[datetime] = None
 
 
 # ========== Helpers ==========
@@ -534,6 +536,8 @@ async def get_chat_list(
         # Check block status
         block_info = check_block_status(db, current_user.id, other_user_id)
 
+        other_user = db.query(User).filter(User.id == other_user_id).first()
+
         result.append(ChatListResponse(
             user_id=other_user_id,
             user_name=other_profile.name if other_profile else "Unknown",
@@ -544,10 +548,19 @@ async def get_chat_list(
             is_blocked=block_info["is_blocked"],
             blocked_by_me=block_info["blocked_by_me"],
             blocked_by_them=block_info["blocked_by_them"],
+            is_online=other_user.is_online if other_user else False,
+            last_seen_at=other_user.last_seen_at if other_user else None,
         ))
         
     # Sort by last message time
-    result.sort(key=lambda x: x.last_message_at or datetime.min, reverse=True)
+    def get_sort_key(x):
+        if not x.last_message_at:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if x.last_message_at.tzinfo is not None:
+            return x.last_message_at
+        return x.last_message_at.replace(tzinfo=timezone.utc)
+        
+    result.sort(key=get_sort_key, reverse=True)
     return result
 
 

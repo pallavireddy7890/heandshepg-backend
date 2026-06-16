@@ -11,8 +11,11 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import User, Profile, Property, Booking, Payment, Invoice, Room, PaymentStatus, BookingStatus, SystemSettings
 from app.utils.security import get_current_user, require_role, get_user_role
+from app.schemas import PropertyDeletionResponse
 from app.services.vacancy import sync_room_vacancy
 
+import logging
+logger = logging.getLogger(__name__)
 require_owner = require_role("owner")
 
 router = APIRouter(prefix="/owner", tags=["Owner"])
@@ -81,6 +84,7 @@ class RentManagementItem(BaseModel):
     email: str
     property_title: str
     room_number: Optional[str]
+    floor_number: Optional[int] = None
     monthly_rent: float
     status: str  # paid, unpaid, partial
     payment_type: Optional[str]
@@ -89,6 +93,13 @@ class RentManagementItem(BaseModel):
     due_date: Optional[date] = None
     security_paid: float = 0
     maintenance_paid: float = 0
+    security_deposit: float = 0
+    maintenance_charge: float = 0
+    remaining_rent: float = 0
+    deposit_paid: bool = False
+    rent_paid: bool = False
+    maintenance_paid_status: bool = False
+    rent_paid_this_period: float = 0
 
 
 class RentManagementResponse(BaseModel):
@@ -110,35 +121,28 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
     start_dt = datetime.combine(period_start, datetime.min.time())
     end_dt = datetime.combine(period_end, datetime.max.time())
 
-    # Query payments for this booking
-    # For initial month, we also look for 'total' payments made at any time for this booking
-    is_first_month = (booking.start_date.year == year and booking.start_date.month == month)
-    
-    if is_first_month:
-        payments = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['rent', 'total', 'deposit', 'maintenance']),
-            or_(
-                and_(WalletTransaction.created_at >= start_dt, WalletTransaction.created_at <= end_dt),
-                WalletTransaction.payment_type == 'total'
-            )
-        ).all()
-    else:
-        payments = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['rent', 'total', 'deposit', 'maintenance']),
-            WalletTransaction.created_at >= start_dt,
-            WalletTransaction.created_at <= end_dt
-        ).all()
+    # Query recurring payments (rent and maintenance) for this booking in this period
+    payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
+        WalletTransaction.created_at >= start_dt,
+        WalletTransaction.created_at <= end_dt
+    ).all()
+
+    # Query security deposit payments across all time (since it is a lifetime payment)
+    deposit_payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['deposit', 'total'])
+    ).all()
 
     rent_paid = 0
-    security_paid = 0
-    maintenance_paid = 0
+    total_maint_txns_amount = 0
     p_date = None
     p_type = None
 
+    # Calculate recurring rent and maintenance
     for p in payments:
         if not p_date or p.created_at > p_date:
             p_date = p.created_at
@@ -147,14 +151,29 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
         if p.payment_type == 'rent':
             rent_paid += p.amount / 100
         elif p.payment_type == 'total':
-            # Attribute portions based on booking record
             rent_paid += booking.amount
-            security_paid += (booking.security_deposit or 0)
-            maintenance_paid += (booking.maintenance_charge or 0)
-        elif p.payment_type == 'deposit':
-            security_paid += p.amount / 100
+            total_maint_txns_amount += (booking.maintenance_charge or 0)
         elif p.payment_type == 'maintenance':
-            maintenance_paid += p.amount / 100
+            total_maint_txns_amount += p.amount / 100
+
+    # Calculate completed deposit transactions (lifetime)
+    total_deposit_txns_amount = 0
+    for p in deposit_payments:
+        if not p_date or p.created_at > p_date:
+            p_date = p.created_at
+            p_type = p.payment_type
+
+        if p.payment_type == 'deposit':
+            total_deposit_txns_amount += p.amount / 100
+        elif p.payment_type == 'total':
+            total_deposit_txns_amount += (booking.security_deposit or 0)
+
+    # Allocate lifetime deposit transactions to security deposit and maintenance charge
+    security_cap = float(booking.security_deposit or 0)
+    security_paid = min(total_deposit_txns_amount, security_cap)
+    leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+    
+    maintenance_paid = total_maint_txns_amount + leftover_deposit
 
     # Determine Status
     if rent_paid >= booking.amount:
@@ -185,11 +204,102 @@ async def get_owner_properties(
     try:
         today = date.today()
         properties = db.query(Property).filter(
-            Property.owner_id == current_user.id
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
         ).order_by(Property.created_at.desc()).all()
+        
+        property_ids = [p.id for p in properties]
+        
+        # Bulk query bookings for these properties in one go
+        all_bookings = db.query(Booking).filter(
+            Booking.property_id.in_(property_ids),
+            Booking.status.in_([
+                BookingStatus.active, 
+                BookingStatus.paid, 
+                BookingStatus.checked_in, 
+                BookingStatus.vacate_requested,
+                BookingStatus.accepted,
+                BookingStatus.requested
+            ])
+        ).all() if property_ids else []
+        
+        # Group bookings by room_id
+        from collections import defaultdict
+        bookings_by_room = defaultdict(list)
+        for b in all_bookings:
+            if b.room_id:
+                bookings_by_room[b.room_id].append(b)
+                
+        # Collect customer IDs to bulk-query users and profiles
+        customer_ids = {b.customer_id for b in all_bookings}
+        profiles = db.query(Profile).filter(Profile.user_id.in_(customer_ids)).all() if customer_ids else []
+        users = db.query(User).filter(User.id.in_(customer_ids)).all() if customer_ids else []
+        
+        profile_map = {p.user_id: p for p in profiles}
+        user_map = {u.id: u for u in users}
         
         result = []
         for prop in properties:
+            rooms_list = []
+            for r in prop.rooms:
+                room_bookings = bookings_by_room.get(r.id, [])
+                
+                # Filter for occupied bookings (actually in beds)
+                occupied_bookings = [
+                    b for b in room_bookings 
+                    if b.status in [BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested]
+                ]
+                vacancy_count = max(0, r.bed_count - len(occupied_bookings))
+                is_available = vacancy_count > 0
+                
+                # Tenants list
+                tenants_list = []
+                for b in room_bookings:
+                    profile = profile_map.get(b.customer_id)
+                    user = user_map.get(b.customer_id)
+                    
+                    email = user.email if user else ""
+                    name = (profile.name if profile else None) or email or "Tenant"
+                    phone = profile.phone if profile else None
+                    
+                    tenants_list.append({
+                        "booking_id": str(b.id),
+                        "name": name,
+                        "email": email,
+                        "phone": phone,
+                        "start_date": b.start_date.isoformat() if b.start_date else None,
+                        "room_id": str(r.id),
+                        "status": calculate_month_rent_stats(
+                            db, b, date.today().month, date.today().year
+                        )["status"]
+                    })
+                
+                rooms_list.append({
+                    "id": str(r.id),
+                    "room_type": r.room_type,
+                    "room_number": r.room_number,
+                    "floor_number": r.floor_number if r.floor_number is not None else 1,
+                    "bed_count": r.bed_count,
+                    "price": r.price,
+                    "monthly_price": r.monthly_price,
+                    "daily_price": r.daily_price,
+                    "daily_price_with_food": r.daily_price_with_food,
+                    "daily_price_without_food": r.daily_price_without_food,
+                    "deposit": r.deposit,
+                    "security_deposit": r.security_deposit,
+                    "maintenance_charge": r.maintenance_charge,
+                    "status_month": today.strftime('%B %Y'),
+                    "vacancy_count": vacancy_count,
+                    "is_available": is_available,
+                    "stay_type": r.stay_type,
+                    "room_photos": r.room_photos or [],
+                    "room_description": r.room_description,
+                    "area_sqft": r.area_sqft,
+                    "width_ft": r.width_ft,
+                    "has_ventilation": r.has_ventilation,
+                    "tenants": tenants_list,
+                })
+                
             result.append({
                 "id": str(prop.id),
                 "title": prop.title,
@@ -206,62 +316,7 @@ async def get_owner_properties(
                 "status": prop.status,
                 "available_from": prop.available_from.isoformat() if prop.available_from else None,
                 "created_at": prop.created_at.isoformat() if prop.created_at else None,
-                "rooms": [{
-                    "id": str(r.id),
-                    "room_type": r.room_type,
-                    "room_number": r.room_number,
-                    "floor_number": r.floor_number or 1,
-                    "bed_count": r.bed_count,
-                    "price": r.price,
-                    "monthly_price": r.monthly_price,
-                    "daily_price": r.daily_price,
-                    "daily_price_with_food": r.daily_price_with_food,
-                    "daily_price_without_food": r.daily_price_without_food,
-                    "deposit": r.deposit,
-                    "security_deposit": r.security_deposit,
-                    "maintenance_charge": r.maintenance_charge,
-                    "status_month": today.strftime('%B %Y'),
-                    "vacancy_count": r.bed_count - len([
-                        b for b in db.query(Booking).filter(
-                            Booking.room_id == r.id,
-                            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
-                        ).all()
-                    ]),
-                    "is_available": (r.bed_count - len([
-                        b for b in db.query(Booking).filter(
-                            Booking.room_id == r.id,
-                            Booking.status.in_([BookingStatus.active, BookingStatus.paid, BookingStatus.checked_in, BookingStatus.vacate_requested])
-                        ).all()
-                    ])) > 0,
-                    "stay_type": r.stay_type,
-                    "room_photos": r.room_photos or [],
-                    "room_description": r.room_description,
-                    "area_sqft": r.area_sqft,
-                    "width_ft": r.width_ft,
-                    "has_ventilation": r.has_ventilation,
-                    "tenants": [{
-                        "booking_id": str(b.id),
-                        "name": (db.query(Profile).filter(Profile.user_id == b.customer_id).first().name if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None) or (db.query(User).filter(User.id == b.customer_id).first().email if db.query(User).filter(User.id == b.customer_id).first() else "Tenant"),
-                        "email": db.query(User).filter(User.id == b.customer_id).first().email if db.query(User).filter(User.id == b.customer_id).first() else "",
-                        "phone": db.query(Profile).filter(Profile.user_id == b.customer_id).first().phone if db.query(Profile).filter(Profile.user_id == b.customer_id).first() else None,
-                        "start_date": b.start_date.isoformat() if b.start_date else None,
-                        "room_id": str(r.id),
-                        "status": calculate_month_rent_stats(
-                            db, b, date.today().month, date.today().year
-                        )["status"]
-                    } for b in db.query(Booking).filter(
-                        Booking.room_id == r.id,
-                        # Filter by business logic - active or soon-to-be active tenants
-                        Booking.status.in_([
-                            BookingStatus.active, 
-                            BookingStatus.paid, 
-                            BookingStatus.checked_in, 
-                            BookingStatus.vacate_requested,
-                            BookingStatus.accepted,
-                            BookingStatus.requested
-                        ])
-                    ).all()],
-                } for r in prop.rooms]
+                "rooms": rooms_list,
             })
         
         return result
@@ -271,7 +326,7 @@ async def get_owner_properties(
 
 # ========== Financial Tracking ==========
 
-@router.delete("/properties/{property_id}", dependencies=[Depends(require_owner)])
+@router.delete("/properties/{property_id}", response_model=PropertyDeletionResponse, dependencies=[Depends(require_owner)])
 async def delete_owner_property(
     property_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -279,37 +334,18 @@ async def delete_owner_property(
 ):
     """Delete a property owned by the current user."""
     try:
-        # Get the property
-        property_obj = db.query(Property).filter(Property.id == property_id).first()
-        
-        if not property_obj:
-            raise HTTPException(status_code=404, detail="Property not found")
-        
-        # Verify ownership
-        if property_obj.owner_id != current_user.id:
-            raise HTTPException(status_code=403, detail="You don't have permission to delete this property")
-        
-        # Check for active bookings
-        active_bookings = db.query(Booking).filter(
-            Booking.property_id == property_id,
-            Booking.status.in_([BookingStatus.active, BookingStatus.accepted, BookingStatus.paid])
-        ).count()
-        
-        if active_bookings > 0:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot delete property with {active_bookings} active booking(s). Please cancel or complete all bookings first."
-            )
-        
-        # Delete the property (CASCADE will handle rooms)
-        db.delete(property_obj)
-        db.commit()
-        
-        return {"message": "Property deleted successfully"}
+        from app.services.property_service import PropertyService
+        return await PropertyService.delete_property(
+            db=db,
+            property_id=property_id,
+            current_user_id=current_user.id,
+            is_admin=False
+        )
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
+        logger.exception(f"Failed to delete owner property {property_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -438,7 +474,10 @@ async def get_financial_summary(
     """Get financial summary for owner."""
     try:
         # Get owner's properties
-        owner_properties = db.query(Property).filter(Property.owner_id == current_user.id).all()
+        owner_properties = db.query(Property).filter(
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
+        ).all()
         property_ids = [p.id for p in owner_properties]
         
         total_properties = len(owner_properties)
@@ -624,8 +663,22 @@ async def get_rent_management_data(
                 "due_date": calculated_due_date,
                 "security_paid": security_this_period,
                 "maintenance_paid": maintenance_this_period,
-                "rent_paid_this_period": rent_this_period
+                "rent_paid_this_period": rent_this_period,
+                "security_deposit": booking.security_deposit or 0,
+                "maintenance_charge": booking.maintenance_charge or 0,
+                "remaining_rent": max(0.0, float(booking.amount) - rent_this_period),
+                "deposit_paid": booking.deposit_paid,
+                "rent_paid": booking.rent_paid,
+                "maintenance_paid_status": booking.maintenance_paid
             })
+
+        # Sort tenants_data by due_date ascending (put None/null at the end)
+        tenants_data.sort(
+            key=lambda x: (
+                0 if x["due_date"] is not None else 1,
+                x["due_date"] or date(9999, 12, 31)
+            )
+        )
 
         return {
             "tenants": tenants_data,
@@ -721,7 +774,10 @@ async def get_owner_tenants(
     """Get all tenants for owner's properties."""
     try:
         # Get owner's properties
-        properties_query = db.query(Property).filter(Property.owner_id == current_user.id)
+        properties_query = db.query(Property).filter(
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
+        )
         
         if property_id:
             properties_query = properties_query.filter(Property.id == property_id)
@@ -761,6 +817,9 @@ async def get_owner_tenants(
                 "start_date": booking.start_date.isoformat() if booking.start_date else None,
                 "end_date": booking.end_date.isoformat() if booking.end_date else None,
                 "monthly_rent": booking.amount,
+                "security_deposit": booking.security_deposit or 0,
+                "maintenance_charge": booking.maintenance_charge or (room.maintenance_charge if room and hasattr(room, 'maintenance_charge') else 0),
+                "stay_type": booking.stay_type or "monthly",
                 # Profile details
                 "profile_photo": profile.profile_photo if profile else None,
                 "gender": profile.gender if profile else None,
@@ -810,7 +869,10 @@ async def verify_tenant_profile(
             raise HTTPException(status_code=400, detail="Invalid status. Must be 'approved', 'rejected', or 'pending'")
         
         # Get owner's properties
-        owner_properties = db.query(Property).filter(Property.owner_id == current_user.id).all()
+        owner_properties = db.query(Property).filter(
+            Property.owner_id == current_user.id,
+            Property.inactive_at.is_(None)
+        ).all()
         property_ids = [p.id for p in owner_properties]
         
         if not property_ids:
@@ -914,6 +976,14 @@ class AddTenantRequest(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     join_date: Optional[date] = None
+    security_deposit: Optional[int] = None
+    deposit_paid: Optional[int] = None
+    deposit_payment_mode: Optional[str] = None
+    deposit_payment_date: Optional[date] = None
+    deposit_notes: Optional[str] = None
+    maintenance_charge: Optional[int] = None
+    maintenance_paid: Optional[int] = None
+    maintenance_payment_mode: Optional[str] = None
 
 
 @router.post("/rooms/{room_id}/add-tenant", dependencies=[Depends(require_owner)])
@@ -1005,6 +1075,9 @@ async def add_tenant_to_room(
 
         # Create active booking
         start_date = request.join_date if request.join_date else date.today()
+        sec_deposit = request.security_deposit if request.security_deposit is not None else (room.deposit or 0)
+        maint_charge = request.maintenance_charge if request.maintenance_charge is not None else (room.maintenance_charge or 0)
+
         booking = Booking(
             property_id=property_obj.id,
             room_id=room.id,
@@ -1013,8 +1086,8 @@ async def add_tenant_to_room(
             start_date=start_date,
             status="active",
             amount=room.price or 0,
-            security_deposit=room.deposit or 0,
-            maintenance_charge=0,
+            security_deposit=sec_deposit,
+            maintenance_charge=maint_charge,
             stay_type=room.stay_type or "monthly",
             customer_snapshot={
                 "name": tenant_name,
@@ -1023,6 +1096,55 @@ async def add_tenant_to_room(
             },
         )
         db.add(booking)
+        db.flush()
+
+        # Create wallet transactions if offline payments were recorded
+        from app.services.wallet_service import WalletService
+        from app.services.booking_service import BookingService
+        
+        owner_wallet = WalletService.get_or_create_wallet(db, current_user.id)
+        
+        # 1. Deposit Payment
+        dep_paid = request.deposit_paid or 0
+        if dep_paid > 0:
+            dep_mode = request.deposit_payment_mode or "cash"
+            dep_date = request.deposit_payment_date or start_date
+            dep_notes = request.deposit_notes or "Initial offline deposit payment"
+            
+            transaction = WalletService.create_offline_transaction(
+                db=db,
+                wallet_id=owner_wallet.id,
+                booking_id=booking.id,
+                payer_id=tenant_user.id,
+                receiver_id=current_user.id,
+                amount=int(dep_paid * 100),
+                payment_type="deposit",
+                payment_method=dep_mode,
+                offline_notes=dep_notes,
+                description="Initial offline deposit payment recorded during tenant addition",
+            )
+            WalletService.complete_transaction(db, transaction.id, bypass_otp=True)
+
+        # 2. Maintenance Payment
+        maint_paid = request.maintenance_paid or 0
+        if maint_paid > 0:
+            maint_mode = request.maintenance_payment_mode or "cash"
+            transaction = WalletService.create_offline_transaction(
+                db=db,
+                wallet_id=owner_wallet.id,
+                booking_id=booking.id,
+                payer_id=tenant_user.id,
+                receiver_id=current_user.id,
+                amount=int(maint_paid * 100),
+                payment_type="maintenance",
+                payment_method=maint_mode,
+                offline_notes="Initial offline maintenance payment",
+                description="Initial offline maintenance payment recorded during tenant addition",
+            )
+            WalletService.complete_transaction(db, transaction.id, bypass_otp=True)
+
+        # Recalculate status and flags
+        BookingService.handle_payment_completion(db, booking.id, "total")
 
         # Sync vacancy using centralized service
         sync_room_vacancy(db, room.id)
@@ -1176,10 +1298,11 @@ async def owner_global_search(
         # 1. Search Properties
         properties = db.query(Property).filter(
             Property.owner_id == current_user.id,
-            (Property.title.ilike(f"%{q}%")) | 
-            (Property.locality.ilike(f"%{q}%")) | 
-            (Property.city.ilike(f"%{q}%")) |
-            (Property.address.ilike(f"%{q}%"))
+            Property.inactive_at.is_(None),
+            ((Property.title.ilike(f"%{q}%")) | 
+             (Property.locality.ilike(f"%{q}%")) | 
+             (Property.city.ilike(f"%{q}%")) |
+             (Property.address.ilike(f"%{q}%")))
         ).limit(10).all()
 
         # 2. Search Tenants (via bookings related to owner properties)

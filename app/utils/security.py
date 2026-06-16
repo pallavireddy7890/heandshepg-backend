@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -15,18 +15,49 @@ from app.models import User
 
 settings = get_settings()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except Exception:
+        return False
 
 
 def get_password_hash(password: str) -> str:
     """Hash a password."""
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+
+def validate_password_strength(password: str) -> str:
+    """Validate that the password is strong.
+    
+    Requirements:
+    - At least 8 characters long
+    - Contains at least one uppercase letter
+    - Contains at least one lowercase letter
+    - Contains at least one digit
+    - Contains at least one special character (non-alphanumeric character, excluding whitespace)
+    """
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long.")
+    
+    if not any(char.isupper() for char in password):
+        raise ValueError("Password must contain at least one uppercase letter.")
+        
+    if not any(char.islower() for char in password):
+        raise ValueError("Password must contain at least one lowercase letter.")
+        
+    if not any(char.isdigit() for char in password):
+        raise ValueError("Password must contain at least one digit.")
+        
+    # Check for at least one special character (non-alphanumeric, ignoring spaces)
+    if not any(not char.isalnum() and not char.isspace() for char in password):
+        raise ValueError("Password must contain at least one special character (e.g. !, @, #, $, %, etc.).")
+        
+    return password
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

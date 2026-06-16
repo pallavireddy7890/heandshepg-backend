@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import User, Booking, Profile, Wallet, WalletTransaction, TransactionType, TransactionStatus, Property, Room
 from app.utils.security import get_current_user, get_user_role
-from app.services.wallet_service import WalletService
+from app.services.wallet_service import WalletService, parse_transaction_metadata
 from app.services.booking_service import BookingService
 from app.services.vacancy import sync_room_vacancy
 from app.config import get_settings
@@ -51,6 +51,8 @@ class InitiatePaymentResponse(BaseModel):
     currency: str
     key_id: str
     message: str
+    otp: Optional[str] = None
+    owner_name: Optional[str] = None
     
     
 class InitiateOfflinePaymentRequest(BaseModel):
@@ -122,10 +124,16 @@ async def get_my_pending_payments(
     db: Session = Depends(get_db),
 ):
     """Get customer's pending payments that need OTP verification by owner."""
-    # Get transactions where current user is the payer and OTP not verified
+    from sqlalchemy import or_, and_
+    # Get transactions where current user is the payer, OTP not verified,
+    # and either it's online and paid/ready (otp_sent) or it's offline and pending verification
     transactions = db.query(WalletTransaction).filter(
         WalletTransaction.payer_id == current_user.id,
-        WalletTransaction.otp_verified == False
+        WalletTransaction.otp_verified == False,
+        or_(
+            and_(WalletTransaction.payment_method == 'online', WalletTransaction.status == TransactionStatus.otp_sent),
+            and_(WalletTransaction.payment_method != 'online', WalletTransaction.status == TransactionStatus.pending)
+        )
     ).order_by(WalletTransaction.created_at.desc()).all()
     
     result = []
@@ -143,12 +151,17 @@ async def get_my_pending_payments(
                 if prop:
                     property_title = prop.title
         
+        # Parse metadata
+        wallet_contribution, total_amount, clean_desc = parse_transaction_metadata(txn.description)
+        
         result.append({
             "id": str(txn.id),
             "transaction_id": str(txn.id),
             "booking_id": str(txn.booking_id) if txn.booking_id else None,
             "payment_type": txn.payment_type if hasattr(txn, 'payment_type') else 'total',
             "amount": txn.amount / 100,  # In INR
+            "total_amount": total_amount / 100 if total_amount > 0 else txn.amount / 100,
+            "wallet_contribution": wallet_contribution / 100 if wallet_contribution > 0 else 0.0,
             "owner_name": owner_profile.name if owner_profile else "Property Owner",
             "property_title": property_title,
             "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
@@ -156,6 +169,7 @@ async def get_my_pending_payments(
             "offline_notes": txn.offline_notes,
             "offline_reference": txn.offline_reference,
             "created_at": txn.created_at.isoformat() if txn.created_at else None,
+            "description": clean_desc,
         })
     
     return result
@@ -167,12 +181,15 @@ async def get_owner_pending_payments(
     db: Session = Depends(get_db),
 ):
     """Get owner's pending payments (offline or online awaiting OTP)."""
-    # Get transactions where current user is the receiver and not completed
+    from sqlalchemy import or_, and_
+    # Get transactions where current user is the receiver, and either it's online and paid/ready (otp_sent)
+    # or it's offline and pending verification
     transactions = db.query(WalletTransaction).filter(
         WalletTransaction.receiver_id == current_user.id,
-        WalletTransaction.status != TransactionStatus.completed,
-        WalletTransaction.status != TransactionStatus.failed,
-        WalletTransaction.status != TransactionStatus.rejected
+        or_(
+            and_(WalletTransaction.payment_method == 'online', WalletTransaction.status == TransactionStatus.otp_sent),
+            and_(WalletTransaction.payment_method != 'online', WalletTransaction.status == TransactionStatus.pending)
+        )
     ).order_by(WalletTransaction.created_at.desc()).all()
     
     result = []
@@ -190,10 +207,15 @@ async def get_owner_pending_payments(
                 if prop:
                     property_title = prop.title
         
+        # Parse metadata
+        wallet_contribution, total_amount, clean_desc = parse_transaction_metadata(txn.description)
+        
         result.append({
             "id": str(txn.id),
             "transaction_id": str(txn.id),
             "amount": txn.amount / 100,  # In INR
+            "total_amount": total_amount / 100 if total_amount > 0 else txn.amount / 100,
+            "wallet_contribution": wallet_contribution / 100 if wallet_contribution > 0 else 0.0,
             "customer_name": payer_profile.name if payer_profile else "Customer",
             "property_title": property_title,
             "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
@@ -201,6 +223,7 @@ async def get_owner_pending_payments(
             "offline_notes": txn.offline_notes,
             "offline_reference": txn.offline_reference,
             "created_at": txn.created_at.isoformat() if txn.created_at else None,
+            "description": clean_desc,
         })
     
     return result
@@ -242,10 +265,15 @@ async def initiate_wallet_payment(
         WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent])
     ).first()
     if existing_txn:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
-        )
+        # If it's a pending online transaction (initiated but not paid), we can delete it and retry
+        if existing_txn.payment_method == 'online' and existing_txn.status == TransactionStatus.pending:
+            db.delete(existing_txn)
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
+            )
     
     # Check for vacancy before allowing payment initiation
     if booking.room_id:
@@ -325,10 +353,9 @@ async def initiate_wallet_payment(
             )
     
     # Create wallet transaction for the owner (credit)
-    # This represents the FULL amount the owner expects
+    # This represents the REMAINING online amount the owner expects to verify with OTP
     description = f"Payment for {request.payment_type} - booking {request.booking_id}"
-    if wallet_contribution_paise > 0:
-        description += f" (Wallet: ₹{wallet_contribution_paise/100:.2f}, Online: ₹{remaining_amount_paise/100:.2f})"
+    description += f" [wallet_contribution:{wallet_contribution_paise}][total_amount:{requested_amount_paise}]"
         
     transaction = WalletService.create_transaction(
         db=db,
@@ -336,9 +363,9 @@ async def initiate_wallet_payment(
         booking_id=UUID(request.booking_id),
         payer_id=current_user.id,
         receiver_id=booking.owner_id,
-        amount=requested_amount_paise, # Full amount credited to owner's pending balance
+        amount=remaining_amount_paise, # Online payable amount
         transaction_type=TransactionType.credit,
-        razorpay_order_id=razorpay_order_id,
+        razorpay_order_id=razorpay_order_id or "paid_via_wallet",
         description=description,
     )
     
@@ -347,9 +374,22 @@ async def initiate_wallet_payment(
         transaction.payment_type = request.payment_type
         db.commit()
     
-    # If fully paid via wallet, we still want OTP verification (or maybe not?)
-    # Usually, even wallet payments should be verified or at least recorded.
-    # The current system requires OTP for all "credits" to owner wallets.
+    # If fully paid via wallet (remaining_amount_paise == 0), generate OTP immediately
+    otp_code = None
+    owner_name = None
+    if remaining_amount_paise == 0:
+        transaction.status = TransactionStatus.otp_sent
+        db.commit()
+        
+        # Generate OTP
+        success, otp_code = WalletService.create_otp_for_display(
+            db=db,
+            transaction_id=transaction.id,
+            user_id=booking.owner_id,
+            otp_type="owner"
+        )
+        owner_profile = db.query(Profile).filter(Profile.user_id == booking.owner_id).first()
+        owner_name = owner_profile.name if owner_profile else "Property Owner"
     
     return InitiatePaymentResponse(
         transaction_id=str(transaction.id),
@@ -357,7 +397,9 @@ async def initiate_wallet_payment(
         amount=remaining_amount_paise,
         currency="INR",
         key_id=settings.razorpay_key_id or "rzp_test_mock",
-        message="Payment initiated. " + ("Complete via Razorpay." if remaining_amount_paise > 0 else "Verify with owner via OTP.")
+        message="Payment initiated. " + ("Complete via Razorpay." if remaining_amount_paise > 0 else "Verify with owner via OTP."),
+        otp=otp_code,
+        owner_name=owner_name
     )
 
 
@@ -391,10 +433,15 @@ async def initiate_offline_wallet_payment(
         WalletTransaction.status.in_([TransactionStatus.pending, TransactionStatus.otp_sent])
     ).first()
     if existing_txn:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
-        )
+        # If it's a pending online transaction (initiated but not paid), we can delete it so they can pay offline
+        if existing_txn.payment_method == 'online' and existing_txn.status == TransactionStatus.pending:
+            db.delete(existing_txn)
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail=f"You already have a pending {request.payment_type} payment for this booking. Please verify or cancel the existing one first."
+            )
     
     # Get owner's wallet
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
@@ -499,9 +546,25 @@ async def verify_razorpay_payment(
     
     # Notify owner about incoming payment (optional - won't fail if notification fails)
     try:
-        await notify_payment_received(db, transaction.receiver_id, transaction.amount / 100, customer_name)
-    except Exception:
-        pass  # Don't fail payment if notification fails
+        from app.models import Booking, Property
+        property_title = None
+        if transaction.booking_id:
+            booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
+            if booking:
+                prop = db.query(Property).filter(Property.id == booking.property_id).first()
+                if prop:
+                    property_title = prop.title
+        await notify_payment_received(
+            db=db,
+            owner_id=transaction.receiver_id,
+            amount=transaction.amount / 100,
+            customer_name=customer_name,
+            property_title=property_title,
+            transaction_id=transaction.id
+        )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send notify_payment_received: {e}")
     
     return {
         "success": True,
@@ -538,6 +601,13 @@ async def verify_transaction_otp(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the recipient (property owner) can verify this OTP"
+        )
+    
+    # Safety Check: For online payments, ensure the transaction has been paid/verified (status is otp_sent)
+    if transaction.payment_method == 'online' and transaction.status != TransactionStatus.otp_sent:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot verify OTP for an unpaid online transaction"
         )
     
     # Verify OTP
@@ -719,30 +789,104 @@ async def collect_offline_payment(
     owner_wallet = WalletService.get_or_create_wallet(db, booking.owner_id)
     
     p_type = request.payment_type
-    
-    # Amount validation: Must match booking amount (room rent) if it's 'rent' or 'total'
-    booking_amount_inr = booking.amount
-    if p_type in ['rent', 'total'] and abs(request.amount - booking_amount_inr) > 0.01:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Amount mismatch. Rent for this room is \u20b9{booking_amount_inr}. You entered \u20b9{request.amount}."
-        )
-
-    # Billing cycle overlap detection
-    from datetime import date
-    if p_type in ['rent', 'total'] and not request.force_payment:
-        period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
-        has_overlap = WalletService.check_payment_overlap(db, booking.id, period_start, period_end)
-        
-        if has_overlap:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Payment already exists for the current cycle ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to pay for the next month?"
-            )
-
-    # Amount in paise
     if request.amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be greater than zero")
+
+    from datetime import date, datetime
+    from app.models.wallet import WalletTransaction, TransactionStatus
+
+    # Calculate start and end of current cycle for recurring charges (rent, maintenance)
+    period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
+    start_dt = datetime.combine(period_start, datetime.min.time())
+    end_dt = datetime.combine(period_end, datetime.max.time())
+
+    # Get cumulative payments for the current cycle (rent, maintenance, total)
+    cycle_payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
+        WalletTransaction.created_at >= start_dt,
+        WalletTransaction.created_at <= end_dt
+    ).all()
+
+    rent_paid = 0
+    maint_paid = 0
+    for p in cycle_payments:
+        if p.payment_type == 'rent':
+            rent_paid += p.amount / 100
+        elif p.payment_type == 'total':
+            rent_paid += booking.amount
+            maint_paid += (booking.maintenance_charge or 0)
+        elif p.payment_type == 'maintenance':
+            maint_paid += p.amount / 100
+
+    # Get lifetime payments for security deposit (deposit, total)
+    deposit_payments = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['deposit', 'total'])
+    ).all()
+
+    deposit_paid = 0
+    for p in deposit_payments:
+        if p.payment_type == 'deposit':
+            deposit_paid += p.amount / 100
+        elif p.payment_type == 'total':
+            deposit_paid += (booking.security_deposit or 0)
+
+    # Validate based on payment type
+    if p_type == 'rent':
+        remaining_rent = max(0.0, float(booking.amount) - rent_paid)
+        # If rent is already fully paid, and they don't force it, throw overlap warning
+        if remaining_rent <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Rent is already fully paid for the current cycle ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to record an extra payment?"
+            )
+        if request.amount > remaining_rent + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining rent of \u20b9{remaining_rent:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+    elif p_type == 'deposit':
+        remaining_deposit = max(0.0, float(booking.security_deposit or 0) - deposit_paid)
+        if remaining_deposit <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Security deposit has already been fully paid."
+            )
+        if request.amount > remaining_deposit + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining security deposit of \u20b9{remaining_deposit:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+    elif p_type == 'maintenance':
+        remaining_maint = max(0.0, float(booking.maintenance_charge or 0) - maint_paid)
+        if remaining_maint <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Maintenance charge is already fully paid for the current cycle."
+            )
+        if request.amount > remaining_maint + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining maintenance charge of \u20b9{remaining_maint:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+    elif p_type == 'total':
+        total_due = float(booking.amount) + float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
+        total_paid = rent_paid + deposit_paid + maint_paid
+        remaining_total = max(0.0, total_due - total_paid)
+        if remaining_total <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="All payments (rent, deposit, maintenance) are already fully paid for this cycle."
+            )
+        if request.amount > remaining_total + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining total due of \u20b9{remaining_total:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+
     amount_paise = int(request.amount * 100)
     
     # 1. Create offline transaction
@@ -820,6 +964,19 @@ async def resend_transaction_otp(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail="Transaction already completed"
+        )
+    
+    # Only allow regenerating OTP if transaction is online AND status is otp_sent
+    if transaction.payment_method != 'online':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OTP verification is not applicable for offline payments"
+        )
+        
+    if transaction.status != TransactionStatus.otp_sent:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot generate OTP for an unpaid online transaction"
         )
     
     # Get owner profile
@@ -902,11 +1059,38 @@ async def delete_transaction(
         
     # Reverse wallet impact if necessary
     # If completed, deduct from owner's main balance. If pending/otp_sent, deduct from pending_balance.
+    # Parse wallet contribution metadata from description
+    wallet_contribution = 0
+    if transaction.description:
+        wallet_contribution, _, _ = parse_transaction_metadata(transaction.description)
+        
+    # Refund to tenant if there is a wallet contribution
+    if wallet_contribution > 0 and transaction.payer_id:
+        tenant_wallet = db.query(Wallet).filter(Wallet.user_id == transaction.payer_id).first()
+        if tenant_wallet:
+            tenant_wallet.balance += wallet_contribution
+            
+            # Create a credit transaction for the tenant's wallet to show refund of wallet balance
+            refund_txn = WalletTransaction(
+                wallet_id=tenant_wallet.id,
+                payer_id=transaction.receiver_id,
+                receiver_id=transaction.payer_id,
+                booking_id=transaction.booking_id,
+                amount=wallet_contribution,
+                transaction_type=TransactionType.credit,
+                status=TransactionStatus.completed,
+                description=f"Refund of wallet contribution for {transaction.payment_type} - booking {transaction.booking_id}"
+            )
+            db.add(refund_txn)
+            
     wallet = db.query(Wallet).filter(Wallet.id == transaction.wallet_id).first()
     if wallet:
         if transaction.status == TransactionStatus.completed:
-            wallet.balance = max(0, wallet.balance - transaction.amount)
-        elif transaction.status in [TransactionStatus.pending, TransactionStatus.otp_sent, TransactionStatus.verified]:
+            # Deduct both online paid amount and wallet contribution
+            wallet.balance = max(0, wallet.balance - (transaction.amount + wallet_contribution))
+        # Only deduct from pending_balance if the transaction was actually added to pending_balance
+        # (online transactions are added when status is otp_sent or verified; offline transactions when status is pending)
+        elif transaction.status in [TransactionStatus.otp_sent, TransactionStatus.verified] or (transaction.payment_method != 'online' and transaction.status == TransactionStatus.pending):
             wallet.pending_balance = max(0, wallet.pending_balance - transaction.amount)
             
     # Update booking status if necessary (might be complex to fully revert rent_paid, but let's at least clear relevant flags)
@@ -933,6 +1117,50 @@ async def delete_transaction(
             # SYNC VACANCY
             if booking.room_id:
                 sync_room_vacancy(db, booking.room_id)
+
+    # Delete the stale "Payment Received" notification(s) associated with this transaction
+    try:
+        from app.models import Notification
+        db.query(Notification).filter(
+            Notification.user_id == transaction.receiver_id,
+            Notification.link.like(f"%{transaction_id}%")
+        ).delete(synchronize_session=False)
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to delete stale payment notification: {e}")
+
+    # Notify owner of the cancellation if the tenant cancelled it
+    if str(transaction.payer_id) == str(current_user.id) and transaction.status != TransactionStatus.completed:
+        try:
+            from app.models import Profile, Property, Booking
+            customer_profile = db.query(Profile).filter(Profile.user_id == transaction.payer_id).first()
+            customer_name = customer_profile.name if customer_profile else "Customer"
+            
+            property_title = None
+            if transaction.booking_id:
+                booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
+                if booking:
+                    prop = db.query(Property).filter(Property.id == booking.property_id).first()
+                    if prop:
+                        property_title = prop.title
+            
+            from app.utils.notifications import create_notification
+            msg = f"{customer_name} has cancelled their payment of ₹{transaction.amount / 100:,.0f}"
+            if property_title:
+                msg += f" for {property_title}"
+            msg += "."
+            
+            await create_notification(
+                db=db,
+                user_id=transaction.receiver_id,
+                title="❌ Payment Cancelled",
+                message=msg,
+                notification_type="warning",
+                link="/owner/bookings"
+            )
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to notify owner of payment cancellation: {e}")
 
     # Delete transaction (CASCADE will handle OTPs)
     db.delete(transaction)

@@ -5,6 +5,10 @@ from app.schemas.user import (
     Token,
     TokenData,
     PasswordReset,
+    ForgotPasswordPhoneRequest,
+    VerifyPasswordResetOTPRequest,
+    SendPhoneOTPRequest,
+    VerifyPhoneOTPRequest,
     PasswordResetConfirm,
     UserResponse,
     UserWithRole,
@@ -17,6 +21,7 @@ from app.schemas.user import (
     KycStatusEnum,
     NotificationStatus,
     ProfileUpdateResponse,
+    ChangePasswordRequest,
 )
 from app.schemas.property import (
     PropertyCreate,
@@ -29,6 +34,8 @@ from app.schemas.property import (
     RoomResponse,
     PropertyFilter,
     GenderPreferenceEnum,
+    PropertyStatusUpdateResponse,
+    PropertyDeletionResponse,
 )
 from app.schemas.booking import (
     BookingCreate,
@@ -76,6 +83,10 @@ __all__ = [
     "Token",
     "TokenData",
     "PasswordReset",
+    "ForgotPasswordPhoneRequest",
+    "VerifyPasswordResetOTPRequest",
+    "SendPhoneOTPRequest",
+    "VerifyPhoneOTPRequest",
     "PasswordResetConfirm",
     "UserResponse",
     "UserWithRole",
@@ -97,6 +108,8 @@ __all__ = [
     "RoomResponse",
     "PropertyFilter",
     "GenderPreferenceEnum",
+    "PropertyStatusUpdateResponse",
+    "PropertyDeletionResponse",
     # Booking schemas
     "BookingCreate",
     "BookingStatusUpdate",
@@ -134,4 +147,5 @@ __all__ = [
     # Notification status schemas
     "NotificationStatus",
     "ProfileUpdateResponse",
+    "ChangePasswordRequest",
 ]
