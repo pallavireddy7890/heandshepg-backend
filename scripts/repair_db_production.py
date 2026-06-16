@@ -55,6 +55,52 @@ def repair_db():
             # Test connection first before running metadata creation
             conn = engine.connect()
             
+            # Ensure PostgreSQL enum types exist before model metadata creation
+            logger.info("Creating custom PostgreSQL enum types (if they do not exist)...")
+            enums = {
+                "gender_preference": ("male", "female", "mixed"),
+                "booking_status": ("requested", "accepted", "paid", "checked_in", "active", "completed", "cancelled", "vacate_requested", "vacated", "rejected"),
+                "payment_status": ("pending", "completed", "failed", "refunded", "pending_verification"),
+                "payment_type": ("booking", "monthly_rent", "refund", "commission"),
+                "invoice_status": ("pending", "paid", "overdue", "cancelled"),
+                "transaction_type": ("credit", "debit", "hold", "release", "withdrawal"),
+                "transaction_status": ("pending", "otp_sent", "verified", "completed", "failed", "refunded", "rejected"),
+                "vacationstatus": ("upcoming", "active", "completed", "cancelled"),
+            }
+            for enum_name, values in enums.items():
+                values_str = ", ".join(f"'{v}'" for v in values)
+                try:
+                    conn.execute(text(
+                         f"DO $$ BEGIN "
+                         f"CREATE TYPE {enum_name} AS ENUM ({values_str}); "
+                         f"EXCEPTION WHEN duplicate_object THEN NULL; "
+                         f"END $$;"
+                    ))
+                except Exception as e:
+                    logger.warning(f"Enum {enum_name} creation note: {e}")
+            
+            # Add missing enum values to existing enums (safe for repeated runs)
+            enum_additions = [
+                "ALTER TYPE transaction_type ADD VALUE IF NOT EXISTS 'withdrawal'",
+                "ALTER TYPE transaction_status ADD VALUE IF NOT EXISTS 'rejected'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_requested'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacated'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'rejected'",
+                "ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'upcoming'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'active'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'completed'",
+                "ALTER TYPE vacationstatus ADD VALUE IF NOT EXISTS 'cancelled'",
+            ]
+            for sql in enum_additions:
+                try:
+                    conn.execute(text(sql))
+                except Exception as e:
+                    logger.warning(f"Enum value add note: {e}")
+            
+            conn.commit()
+            logger.info("PostgreSQL enum types ready")
+            
             # Ensure all base tables are created in the database first
             logger.info("Ensuring all base tables exist in schema...")
             from app.database import Base
