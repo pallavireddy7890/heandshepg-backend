@@ -672,6 +672,14 @@ async def get_rent_management_data(
                 "maintenance_paid_status": booking.maintenance_paid
             })
 
+        # Sort tenants_data by due_date ascending (put None/null at the end)
+        tenants_data.sort(
+            key=lambda x: (
+                0 if x["due_date"] is not None else 1,
+                x["due_date"] or date(9999, 12, 31)
+            )
+        )
+
         return {
             "tenants": tenants_data,
             "stats": {
