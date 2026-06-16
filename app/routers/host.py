@@ -15,6 +15,100 @@ from app.models.message import Message, Conversation
 router = APIRouter(prefix="/host", tags=["Host"])
 
 
+def calculate_host_response_rate(db: Session, host_id: UUID) -> float:
+    """Calculate the host's response rate out of 10 based on messaging, booking response, and complaint resolution."""
+    # 1. Message Response Score (out of 4.0)
+    from app.models.message import Message, Conversation
+    host_conversations = db.query(Conversation).filter(
+        Conversation.owner_id == host_id
+    ).all()
+    conversation_ids = [c.id for c in host_conversations]
+    
+    messages_to_host = db.query(Message).filter(
+        Message.conversation_id.in_(conversation_ids),
+        Message.to_user == host_id
+    ).count() if conversation_ids else 0
+    
+    messages_from_host = db.query(Message).filter(
+        Message.conversation_id.in_(conversation_ids),
+        Message.from_user == host_id
+    ).count() if conversation_ids else 0
+    
+    msg_score = 4.0
+    if messages_to_host > 0:
+        ratio = messages_from_host / messages_to_host
+        msg_score = min(4.0, ratio * 4.0)
+        
+    # 2. Booking Response Score (out of 3.0)
+    from app.models.booking import Booking
+    
+    bookings = db.query(Booking).filter(
+        Booking.owner_id == host_id
+    ).all()
+    
+    booking_times = []
+    for b in bookings:
+        if b.status != "requested" and b.created_at and b.updated_at:
+            dt = (b.updated_at - b.created_at).total_seconds() / 3600.0 # in hours
+            if dt > 0:
+                booking_times.append(dt)
+                
+    booking_score = 3.0
+    if booking_times:
+        avg_booking_dt = sum(booking_times) / len(booking_times)
+        if avg_booking_dt <= 6:
+            booking_score = 3.0
+        elif avg_booking_dt <= 12:
+            booking_score = 2.5
+        elif avg_booking_dt <= 24:
+            booking_score = 2.0
+        elif avg_booking_dt <= 48:
+            booking_score = 1.5
+        else:
+            booking_score = 0.5
+            
+    # 3. Maintenance/Complaint Reaction Score (out of 3.0)
+    from app.models.maintenance import Ticket
+    from app.models.property import Property
+    
+    tickets = db.query(Ticket).join(Property).filter(
+        Property.owner_id == host_id
+    ).all()
+    
+    ticket_times = []
+    for t in tickets:
+        if t.status in ["in_progress", "resolved", "closed"] and t.created_at and t.updated_at:
+            dt = (t.updated_at - t.created_at).total_seconds() / 3600.0 # in hours
+            if dt > 0:
+                ticket_times.append(dt)
+                
+    ticket_score = 3.0
+    if ticket_times:
+        avg_ticket_dt = sum(ticket_times) / len(ticket_times)
+        if avg_ticket_dt <= 12:
+            ticket_score = 3.0
+        elif avg_ticket_dt <= 24:
+            ticket_score = 2.5
+        elif avg_ticket_dt <= 48:
+            ticket_score = 2.0
+        elif avg_ticket_dt <= 72:
+            ticket_score = 1.5
+        else:
+            ticket_score = 0.5
+            
+    total_score = msg_score + booking_score + ticket_score
+    
+    # Check manual override
+    profile = db.query(Profile).filter(Profile.user_id == host_id).first()
+    if profile and profile.response_rate is not None:
+        has_history = messages_to_host > 0 or len(bookings) > 0 or len(tickets) > 0
+        if not has_history or profile.response_rate != 10.0:
+            return min(10.0, max(1.0, round(profile.response_rate, 1)))
+            
+    return min(10.0, max(1.0, round(total_score, 1)))
+
+
+
 @router.get("/{host_id}")
 async def get_host_profile(
     host_id: UUID,
@@ -88,32 +182,26 @@ async def get_host_profile(
     
     occupancy_rate = round((active_bookings / total_beds * 100) if total_beds > 0 else 0, 1)
     
-    # Response rate - calculate from messages
-    # Count messages sent TO the host and messages host REPLIED to
+    response_rate = calculate_host_response_rate(db, host_id)
+    
+    # Count messages sent TO the host and messages host REPLIED to for response time calculation
     from datetime import timedelta
     from sqlalchemy import and_, or_
     
-    # Get conversations where host is the owner
     host_conversations = db.query(Conversation).filter(
         Conversation.owner_id == host_id
     ).all()
-    
     conversation_ids = [c.id for c in host_conversations]
     
-    # Messages sent to host (from customers)
     messages_to_host = db.query(Message).filter(
         Message.conversation_id.in_(conversation_ids),
         Message.to_user == host_id
     ).count() if conversation_ids else 0
     
-    # Messages sent by host (replies)
     messages_from_host = db.query(Message).filter(
         Message.conversation_id.in_(conversation_ids),
         Message.from_user == host_id
     ).count() if conversation_ids else 0
-    
-    response_rate = round((messages_from_host / messages_to_host * 100) if messages_to_host > 0 else 100, 0)
-    response_rate = min(response_rate, 100)  # Cap at 100%
     
     # Calculate average response time
     avg_response_time = "< 1 hour"

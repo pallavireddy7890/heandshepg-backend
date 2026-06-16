@@ -75,6 +75,7 @@ async def get_profile(
         "college_company_id_url": profile.college_company_id_url,
         "profile_verification_status": profile.profile_verification_status,
         "hosting_since": profile.hosting_since.isoformat() if profile.hosting_since else None,
+        "response_rate": profile.response_rate,
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
     }
@@ -577,6 +578,7 @@ async def verify_phone_otp(
         "college_company_id_url": profile.college_company_id_url,
         "profile_verification_status": profile.profile_verification_status,
         "hosting_since": profile.hosting_since.isoformat() if profile.hosting_since else None,
+        "response_rate": profile.response_rate,
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
     }

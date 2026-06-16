@@ -169,6 +169,7 @@ class ProfileBase(BaseModel):
     dl_back_url: Optional[str] = None
     college_company_id_url: Optional[str] = None
     profile_verification_status: Optional[str] = "pending"
+    response_rate: Optional[float] = 10.0
     # NOTE: Owner availability fields disabled until migration is run
     # owner_available: Optional[bool] = True
     # available_from: Optional[str] = None
@@ -243,6 +244,7 @@ class ProfileUpdate(BaseModel):
     
     # Hosting experience (for owners)
     hosting_since: Optional[date] = None
+    response_rate: Optional[float] = None
 
 
 class ProfileResponse(ProfileBase):

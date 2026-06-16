@@ -163,6 +163,11 @@ async def get_property(
     response = PropertyDetailResponse.model_validate(property)
     response.rooms = [RoomResponse.model_validate(r) for r in rooms]
     
+    # Calculate response rate
+    from app.routers.host import calculate_host_response_rate
+    host_id = property.owner_id
+    response_rate = calculate_host_response_rate(db, host_id)
+
     # Mask bank account number
     masked_account = "********" + owner_profile.bank_account_number[-4:] if owner_profile and owner_profile.bank_account_number and len(owner_profile.bank_account_number) > 4 else owner_profile.bank_account_number if owner_profile else None
 
@@ -174,6 +179,7 @@ async def get_property(
         "bank_name": owner_profile.bank_name if owner_profile else None,
         "bank_account_masked": masked_account,
         "bank_ifsc_code": owner_profile.bank_ifsc_code if owner_profile else None,
+        "response_rate": response_rate,
     }
     response.average_rating = float(review_stats.avg_rating) if review_stats.avg_rating else None
     response.review_count = review_stats.count or 0

@@ -577,17 +577,36 @@ class WalletService:
             
             # Get booking and property info for better description
             property_title = None
-            booking_info = None
+            booking_details = None
             if txn.booking_id:
-                from app.models import Booking, Property
+                from app.models import Booking, Property, Room
                 booking = db.query(Booking).filter(Booking.id == txn.booking_id).first()
                 if booking:
                     property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+                    room_obj = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
                     if property_obj:
                         property_title = property_obj.title
-                    booking_info = {
+                    
+                    booking_details = {
+                        "id": str(booking.id),
                         "start_date": booking.start_date.isoformat() if booking.start_date else None,
+                        "end_date": booking.end_date.isoformat() if booking.end_date else None,
                         "status": booking.status,
+                        "stay_type": booking.stay_type,
+                        "duration_days": booking.duration_days,
+                        "amount": booking.amount,
+                        "security_deposit": booking.security_deposit,
+                        "maintenance_charge": booking.maintenance_charge,
+                        "property": {
+                            "title": property_obj.title if property_obj else None,
+                            "locality": property_obj.locality if property_obj else None,
+                            "city": property_obj.city if property_obj else None,
+                        } if property_obj else None,
+                        "room": {
+                            "room_type": room_obj.room_type if room_obj else None,
+                            "room_number": room_obj.room_number if room_obj else None,
+                            "floor_number": room_obj.floor_number if room_obj else None,
+                        } if room_obj else None
                     }
             
             # Parse metadata
@@ -614,10 +633,12 @@ class WalletService:
                 "description": description,
                 "otp_verified": txn.otp_verified,
                 "payment_method": txn.payment_method,
+                "payment_type": txn.payment_type or "rent",
                 "offline_notes": txn.offline_notes,
                 "offline_reference": txn.offline_reference,
                 "razorpay_payment_id": txn.razorpay_payment_id,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
+                "booking_details": booking_details,
             })
         
         return result
