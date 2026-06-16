@@ -35,26 +35,47 @@ def run_alter(conn, sql: str, description: str):
         logger.error(f"FAIL: {description} (Error: {e})")
         # Don't raise here yet - some fails (like enums) are expected or already handled.
 
+import time
+
 def repair_db():
     if not DATABASE_URL:
         logger.critical("DATABASE_URL is not set!")
         sys.exit(1)
 
-    logger.info(f"Connecting to database...")
-    try:
-        engine = create_engine(DATABASE_URL)
-        
-        # Ensure all base tables are created in the database first
-        logger.info("Ensuring all base tables exist in schema...")
-        from app.database import Base
-        import app.models  # Load and register all models with Base.metadata
-        Base.metadata.create_all(bind=engine)
-        logger.info("Base tables verified/created successfully.")
-        
-        conn = engine.connect()
-    except Exception as e:
-        logger.critical(f"Database connection or initialization failed: {e}")
-        sys.exit(1)
+    max_retries = 20
+    retry_delay = 3
+    engine = None
+    conn = None
+
+    for attempt in range(1, max_retries + 1):
+        logger.info(f"Connecting to database (attempt {attempt}/{max_retries})...")
+        try:
+            engine = create_engine(DATABASE_URL)
+            
+            # Test connection first before running metadata creation
+            conn = engine.connect()
+            
+            # Ensure all base tables are created in the database first
+            logger.info("Ensuring all base tables exist in schema...")
+            from app.database import Base
+            import app.models  # Load and register all models with Base.metadata
+            Base.metadata.create_all(bind=engine)
+            logger.info("Base tables verified/created successfully.")
+            break
+        except Exception as e:
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+                conn = None
+            
+            if attempt == max_retries:
+                logger.critical(f"Database connection or initialization failed after {max_retries} attempts: {e}")
+                sys.exit(1)
+            
+            logger.warning(f"Database not ready ({e}). Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
 
     try:
         # --- MIGRATION 018: Wallet Transactions ---
