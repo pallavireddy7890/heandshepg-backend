@@ -8,6 +8,9 @@ echo "[ENTRYPOINT] Starting database maintenance..."
 # before the app starts or Alembic attempts to update the version table.
 python scripts/repair_db_production.py
 
+echo "[ENTRYPOINT] Ensuring admin credentials exist..."
+python scripts/create_admin.py || echo "[ENTRYPOINT] Admin creation script failed or bypassed."
+
 echo "[ENTRYPOINT] Running alembic migrations..."
 # Try to run alembic upgrade. 
 alembic upgrade head || {
