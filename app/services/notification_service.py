@@ -1,4 +1,5 @@
 """Notification service for sending email and SMS confirmations."""
+import os
 import logging
 import smtplib
 from email.mime.text import MIMEText
@@ -13,6 +14,18 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def safe_log_write(filepath: str, content: str) -> None:
+    """Safely write to a log file, creating directories if needed, without raising exceptions."""
+    try:
+        dir_name = os.path.dirname(filepath)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        with open(filepath, "a") as f:
+            f.write(content)
+    except Exception as e:
+        logger.error(f"Failed to write debug log to {filepath}: {str(e)}")
 
 
 class NotificationService:
@@ -68,8 +81,7 @@ class NotificationService:
                 log_msg += f"SMTP Error: {str(smtp_err)}\n"
                 log_msg += "---------------------------------------\n"
                 
-                with open("logs/email_debug.log", "a") as f:
-                    f.write(log_msg)
+                safe_log_write("logs/email_debug.log", log_msg)
                 
                 # Also print to terminal for visibility
                 print(log_msg)
@@ -102,8 +114,7 @@ class NotificationService:
             return False, "Twilio from number not configured"
         
         try:
-            with open("logs/sms_debug.log", "a") as f:
-                f.write(f"[{datetime.now()}] INFO: Attempting to send SMS to {to_phone}\n")
+            safe_log_write("logs/sms_debug.log", f"[{datetime.now()}] INFO: Attempting to send SMS to {to_phone}\n")
             
             from twilio.rest import Client
             
@@ -116,8 +127,7 @@ class NotificationService:
             # Clean up Twilio From number (ensure E.164)
             from_number = settings.twilio_from_number.replace(" ", "")
             
-            with open("logs/sms_debug.log", "a") as f:
-                f.write(f"[{datetime.now()}] INFO: Client created. From: {from_number}, To: {to_phone}\n")
+            safe_log_write("logs/sms_debug.log", f"[{datetime.now()}] INFO: Client created. From: {from_number}, To: {to_phone}\n")
                 
             message_obj = client.messages.create(
                 body=message,
@@ -125,16 +135,14 @@ class NotificationService:
                 to=to_phone
             )
             
-            with open("logs/sms_debug.log", "a") as f:
-                f.write(f"[{datetime.now()}] SUCCESS: SMS sent. SID: {message_obj.sid}\n")
+            safe_log_write("logs/sms_debug.log", f"[{datetime.now()}] SUCCESS: SMS sent. SID: {message_obj.sid}\n")
                 
             logger.info(f"SMS sent successfully to {to_phone}, SID: {message_obj.sid}")
             return True, None
             
         except ImportError:
             error_msg = "Twilio library not installed. Run: pip install twilio"
-            with open("sms_debug.log", "a") as f:
-                f.write(f"[{datetime.now()}] ERROR: {error_msg}\n")
+            safe_log_write("logs/sms_debug.log", f"[{datetime.now()}] ERROR: {error_msg}\n")
             logger.error(error_msg)
             return False, error_msg
         except Exception as e:
@@ -147,14 +155,12 @@ class NotificationService:
             if is_trial_unverified:
                 error_summary = "Twilio Trial Restriction: Recipient number is not verified."
                 instruction = f"ACTION REQUIRED: Please verify {to_phone} in your Twilio Console: https://www.twilio.com/console/phone-numbers/verified"
-                with open("logs/sms_debug.log", "a") as f:
-                    f.write(f"[{datetime.now()}] BLOCKER: {error_summary}\n{instruction}\n")
+                safe_log_write("logs/sms_debug.log", f"[{datetime.now()}] BLOCKER: {error_summary}\n{instruction}\n")
                 logger.warning(error_summary)
                 return False, error_summary
             
             error_msg = f"Failed to send SMS: {str(e)}"
-            with open("logs/sms_debug.log", "a") as f:
-                f.write(f"[{datetime.now()}] FAILED: {error_msg}\n{tb}\n")
+            safe_log_write("logs/sms_debug.log", f"[{datetime.now()}] FAILED: {error_msg}\n{tb}\n")
             logger.error(error_msg)
             return False, error_msg
     
