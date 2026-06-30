@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     property_id UUID REFERENCES properties(id) ON DELETE CASCADE NOT NULL,
     room_type VARCHAR(50) NOT NULL,
-    floor_number INTEGER DEFAULT 1,
+    floor_number VARCHAR(50) DEFAULT '1',
     room_number VARCHAR(20),
     bed_count INTEGER NOT NULL,
     price INTEGER NOT NULL,  -- Legacy

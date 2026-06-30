@@ -84,7 +84,7 @@ class RentManagementItem(BaseModel):
     email: str
     property_title: str
     room_number: Optional[str]
-    floor_number: Optional[int] = None
+    floor_number: Optional[str] = None
     monthly_rent: float
     status: str  # paid, unpaid, partial
     payment_type: Optional[str]
@@ -278,7 +278,7 @@ async def get_owner_properties(
                     "id": str(r.id),
                     "room_type": r.room_type,
                     "room_number": r.room_number,
-                    "floor_number": r.floor_number if r.floor_number is not None else 1,
+                    "floor_number": r.floor_number if r.floor_number is not None else "1",
                     "bed_count": r.bed_count,
                     "price": r.price,
                     "monthly_price": r.monthly_price,

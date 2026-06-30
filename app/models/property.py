@@ -70,7 +70,7 @@ class Room(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     property_id = Column(UUID(as_uuid=True), ForeignKey("properties.id", ondelete="CASCADE"), nullable=False)
     room_type = Column(String(50), nullable=False)  # Single Sharing, Double Sharing, etc.
-    floor_number = Column(Integer, default=1)
+    floor_number = Column(String(50), default="1")
     room_number = Column(String(20))  # 101, 102, 203
     bed_count = Column(Integer, nullable=False)
     price = Column(Integer, nullable=False)  # Legacy: kept for backward compatibility

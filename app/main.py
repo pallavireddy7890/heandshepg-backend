@@ -235,7 +235,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS safety_score INTEGER",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_amenities JSONB",
                 # === ROOMS ===
-                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS floor_number INTEGER DEFAULT 1",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS floor_number VARCHAR(50) DEFAULT '1'",
+                "ALTER TABLE rooms ALTER COLUMN floor_number TYPE VARCHAR(50) USING floor_number::text",
+                "ALTER TABLE rooms ALTER COLUMN floor_number SET DEFAULT '1'",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS room_number VARCHAR(20)",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS deposit INTEGER",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS security_deposit INTEGER",
