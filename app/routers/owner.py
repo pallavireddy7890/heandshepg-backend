@@ -86,7 +86,7 @@ class RentManagementItem(BaseModel):
     room_number: Optional[str]
     floor_number: Optional[str] = None
     monthly_rent: float
-    status: str  # paid, unpaid, partial (₹amount), upcoming, due_today
+    status: str  # paid, unpaid, partial, upcoming, due_today
     payment_type: Optional[str]
     payment_date: Optional[datetime]
     last_payment_method: Optional[str]
@@ -195,7 +195,7 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
     if rent_paid >= booking.amount:
         status = "paid"
     elif rent_paid > 0:
-        status = f"partial (₹{rent_paid:,.0f})"
+        status = "partial"
     else:
         # No rent paid yet — check due date to distinguish upcoming vs unpaid
         if calculated_due_date > today:
