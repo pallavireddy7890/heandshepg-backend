@@ -86,7 +86,7 @@ class RentManagementItem(BaseModel):
     room_number: Optional[str]
     floor_number: Optional[str] = None
     monthly_rent: float
-    status: str  # paid, unpaid, partial, upcoming, due_today
+    status: str  # paid, unpaid, partial (₹amount), upcoming, due_today
     payment_type: Optional[str]
     payment_date: Optional[datetime]
     last_payment_method: Optional[str]
@@ -583,7 +583,17 @@ async def get_rent_management_data(
         
         owned_property_ids = [p.id for p in prop_query.all()]
         if not owned_property_ids:
-            return {"tenants": [], "stats": {"total_tenants": 0, "paid_count": 0, "unpaid_count": 0, "collected_amount": 0}}
+            return {
+                "tenants": [],
+                "stats": {
+                    "total_tenants": 0,
+                    "paid_count": 0,
+                    "unpaid_count": 0,
+                    "partial_count": 0,
+                    "upcoming_count": 0,
+                    "collected_amount": 0
+                }
+            }
 
         today = date.today()
         if month > 0:
@@ -603,6 +613,8 @@ async def get_rent_management_data(
                         "total_tenants": 0, 
                         "paid_count": 0, 
                         "unpaid_count": 0, 
+                        "partial_count": 0,
+                        "upcoming_count": 0,
                         "collected_amount": 0
                     }
                 }
@@ -619,6 +631,8 @@ async def get_rent_management_data(
                         "total_tenants": 0, 
                         "paid_count": 0, 
                         "unpaid_count": 0, 
+                        "partial_count": 0,
+                        "upcoming_count": 0,
                         "collected_amount": 0
                     }
                 }
