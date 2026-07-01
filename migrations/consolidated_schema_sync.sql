@@ -74,6 +74,8 @@ ALTER TABLE cities ADD COLUMN IF NOT EXISTS priority_order INTEGER DEFAULT 0;
 -- ROOMS TABLE - Missing columns
 -- ================================================
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS floor_number VARCHAR(50) DEFAULT '1';
+ALTER TABLE rooms ALTER COLUMN floor_number TYPE VARCHAR(50) USING floor_number::text;
+ALTER TABLE rooms ALTER COLUMN floor_number SET DEFAULT '1';
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS room_number VARCHAR(20);
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS monthly_price INTEGER;
 ALTER TABLE rooms ADD COLUMN IF NOT EXISTS daily_price INTEGER;

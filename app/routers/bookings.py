@@ -46,6 +46,36 @@ async def list_all_bookings(
     
     bookings = query.order_by(Booking.created_at.desc()).offset(skip).limit(limit).all()
     
+    # Pre-aggregate transaction sums to avoid N+1 queries (Copilot review)
+    from sqlalchemy import func
+    from app.models.wallet import WalletTransaction, TransactionStatus, TransactionType
+    
+    booking_ids = [b.id for b in bookings]
+    
+    debit_sums = {}
+    credit_sums = {}
+    
+    if booking_ids:
+        debit_rows = db.query(
+            WalletTransaction.booking_id,
+            func.sum(WalletTransaction.amount)
+        ).filter(
+            WalletTransaction.booking_id.in_(booking_ids),
+            WalletTransaction.transaction_type == TransactionType.debit,
+            WalletTransaction.status == TransactionStatus.completed
+        ).group_by(WalletTransaction.booking_id).all()
+        debit_sums = {b_id: amount for b_id, amount in debit_rows if b_id}
+
+        credit_rows = db.query(
+            WalletTransaction.booking_id,
+            func.sum(WalletTransaction.amount)
+        ).filter(
+            WalletTransaction.booking_id.in_(booking_ids),
+            WalletTransaction.transaction_type == TransactionType.credit,
+            WalletTransaction.status == TransactionStatus.completed
+        ).group_by(WalletTransaction.booking_id).all()
+        credit_sums = {b_id: amount for b_id, amount in credit_rows if b_id}
+    
     # Enrich with property and user details
     result = []
     for booking in bookings:
@@ -72,24 +102,12 @@ async def list_all_bookings(
         if booking.property:
             property_title = booking.property.title
         
-        # Calculate referral and actual paid amounts from wallet transactions
-        from sqlalchemy import func
-        from app.models.wallet import WalletTransaction, TransactionStatus
-        
         # Debits on booking_id are referral/wallet usage
-        referral_paid_paise = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.transaction_type == "debit",
-            WalletTransaction.status == TransactionStatus.completed
-        ).scalar() or 0
+        referral_paid_paise = debit_sums.get(booking.id, 0) or 0
         referral_amount_used = int(referral_paid_paise / 100)
 
         # Credits on booking_id are the payments received from customer (online/offline)
-        actual_paid_paise = db.query(func.sum(WalletTransaction.amount)).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.transaction_type == "credit",
-            WalletTransaction.status == TransactionStatus.completed
-        ).scalar() or 0
+        actual_paid_paise = credit_sums.get(booking.id, 0) or 0
         actual_paid = int(actual_paid_paise / 100)
 
         # Total amount is the sum of both transactions, or fallback to booking total if no transactions exist
