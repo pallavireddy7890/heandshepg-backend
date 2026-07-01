@@ -494,7 +494,12 @@ async def get_financial_summary(
         # Get active bookings (current tenants)
         active_bookings = db.query(Booking).filter(
             Booking.property_id.in_(property_ids),
-            Booking.status.in_([BookingStatus.active, BookingStatus.paid])
+            Booking.status.in_([
+                BookingStatus.active, 
+                BookingStatus.paid, 
+                BookingStatus.checked_in, 
+                BookingStatus.vacate_requested
+            ])
         ).all()
         
         total_tenants = len(active_bookings)
