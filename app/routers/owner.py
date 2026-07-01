@@ -84,7 +84,7 @@ class RentManagementItem(BaseModel):
     email: str
     property_title: str
     room_number: Optional[str]
-    floor_number: Optional[int] = None
+    floor_number: Optional[str] = None
     monthly_rent: float
     status: str  # paid, unpaid, partial
     payment_type: Optional[str]
@@ -278,7 +278,7 @@ async def get_owner_properties(
                     "id": str(r.id),
                     "room_type": r.room_type,
                     "room_number": r.room_number,
-                    "floor_number": r.floor_number if r.floor_number is not None else 1,
+                    "floor_number": r.floor_number if r.floor_number is not None else "1",
                     "bed_count": r.bed_count,
                     "price": r.price,
                     "monthly_price": r.monthly_price,
@@ -494,7 +494,12 @@ async def get_financial_summary(
         # Get active bookings (current tenants)
         active_bookings = db.query(Booking).filter(
             Booking.property_id.in_(property_ids),
-            Booking.status.in_([BookingStatus.active, BookingStatus.paid])
+            Booking.status.in_([
+                BookingStatus.active, 
+                BookingStatus.paid, 
+                BookingStatus.checked_in, 
+                BookingStatus.vacate_requested
+            ])
         ).all()
         
         total_tenants = len(active_bookings)
@@ -731,6 +736,7 @@ async def get_tenant_transaction_history(
             ])
         ).order_by(WalletTransaction.created_at.desc()).all()
 
+        from app.services.wallet_service import calculate_transaction_breakdown
         result = []
         for txn in transactions:
             result.append({
@@ -743,6 +749,7 @@ async def get_tenant_transaction_history(
                 "offline_notes": txn.offline_notes,
                 "offline_reference": txn.offline_reference,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
+                "breakdown": calculate_transaction_breakdown(txn, booking_obj=booking),
             })
 
         return {

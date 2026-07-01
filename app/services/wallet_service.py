@@ -42,6 +42,87 @@ def parse_transaction_metadata(description: str):
     return wallet_contribution, total_amount, clean_desc
 
 
+def calculate_transaction_breakdown(txn, booking_details: Optional[dict] = None, booking_obj = None) -> dict:
+    """Calculate the breakdown of payment categories for a transaction in INR."""
+    # (1) Return all-zero breakdown when there is no booking context
+    if not txn.booking_id:
+        return {
+            "rent": 0.0,
+            "security_deposit": 0.0,
+            "maintenance": 0.0
+        }
+
+    _wallet_contribution, total_amount, _ = parse_transaction_metadata(txn.description)
+    total_amt_inr = (total_amount / 100) if total_amount > 0 else (txn.amount / 100)
+    
+    breakdown = {
+        "rent": 0.0,
+        "security_deposit": 0.0,
+        "maintenance": 0.0
+    }
+    
+    p_type = txn.payment_type
+    
+    # (2) Infer p_type from the description when payment_type is missing or "total"
+    desc_lower = (txn.description or "").lower()
+    inferred_type = None
+    has_rent = "rent" in desc_lower
+    has_deposit = "deposit" in desc_lower or "security" in desc_lower
+    has_maint = "maintenance" in desc_lower or "maint" in desc_lower
+    
+    # If only one of the categories is mentioned, infer that type
+    if has_rent and not has_deposit and not has_maint:
+        inferred_type = "rent"
+    elif has_deposit and not has_rent and not has_maint:
+        inferred_type = "deposit"
+    elif has_maint and not has_rent and not has_deposit:
+        inferred_type = "maintenance"
+        
+    if not p_type or p_type == "total":
+        if inferred_type:
+            p_type = inferred_type
+        elif not p_type:
+            p_type = "total"
+    
+    if p_type == "rent":
+        breakdown["rent"] = total_amt_inr
+    elif p_type == "deposit":
+        breakdown["security_deposit"] = total_amt_inr
+    elif p_type == "maintenance":
+        breakdown["maintenance"] = total_amt_inr
+    elif p_type == "total":
+        if booking_details or booking_obj:
+            rent_val = float(booking_details.get("amount") or 0.0) if booking_details else float(booking_obj.amount or 0.0)
+            deposit_val = float(booking_details.get("security_deposit") or 0.0) if booking_details else float(booking_obj.security_deposit or 0.0)
+            maint_val = float(booking_details.get("maintenance_charge") or 0.0) if booking_details else float(booking_obj.maintenance_charge or 0.0)
+            
+            remaining = total_amt_inr
+            
+            # Priority 1: Security Deposit
+            allocated_deposit = min(remaining, deposit_val)
+            remaining -= allocated_deposit
+            
+            # Priority 2: Maintenance
+            allocated_maint = min(remaining, maint_val)
+            remaining -= allocated_maint
+            
+            # Priority 3: Rent
+            allocated_rent = min(remaining, rent_val)
+            remaining -= allocated_rent
+            
+            # Leftover/excess goes to Rent
+            if remaining > 0:
+                allocated_rent += remaining
+                
+            breakdown["rent"] = allocated_rent
+            breakdown["security_deposit"] = allocated_deposit
+            breakdown["maintenance"] = allocated_maint
+        else:
+            breakdown["rent"] = total_amt_inr
+            
+    return breakdown
+
+
 class WalletService:
     """Service for wallet operations."""
     
@@ -639,6 +720,7 @@ class WalletService:
                 "razorpay_payment_id": txn.razorpay_payment_id,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
                 "booking_details": booking_details,
+                "breakdown": calculate_transaction_breakdown(txn, booking_details=booking_details),
             })
         
         return result

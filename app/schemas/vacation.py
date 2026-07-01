@@ -39,4 +39,4 @@ class VacationOwnerView(VacationResponse):
     tenant_name: Optional[str] = None
     property_title: Optional[str] = None
     room_number: Optional[str] = None
-    floor_number: Optional[int] = None
+    floor_number: Optional[str] = None
