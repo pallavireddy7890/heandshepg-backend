@@ -44,7 +44,7 @@ def parse_transaction_metadata(description: str):
 
 def calculate_transaction_breakdown(txn, booking_details: Optional[dict] = None, booking_obj = None) -> dict:
     """Calculate the breakdown of payment categories for a transaction in INR."""
-    wallet_contribution, total_amount, _ = parse_transaction_metadata(txn.description)
+    _wallet_contribution, total_amount, _ = parse_transaction_metadata(txn.description)
     total_amt_inr = (total_amount / 100) if total_amount > 0 else (txn.amount / 100)
     
     breakdown = {
