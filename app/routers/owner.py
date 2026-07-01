@@ -736,16 +736,28 @@ async def get_tenant_transaction_history(
             ])
         ).order_by(WalletTransaction.created_at.desc()).all()
 
+        tenant_name = profile.name if profile else (user.email if user else "Unknown")
+        room_desc = f"Room {room.room_number}" if room else "Room"
+        desc_replacement = f"{room_desc} ({tenant_name})" if tenant_name != "Unknown" else room_desc
+
         from app.services.wallet_service import calculate_transaction_breakdown
         result = []
         for txn in transactions:
+            description = txn.description or ""
+            booking_uuid_str = str(booking.id)
+            if booking_uuid_str in description:
+                if f"booking {booking_uuid_str}" in description:
+                    description = description.replace(f"booking {booking_uuid_str}", desc_replacement)
+                else:
+                    description = description.replace(booking_uuid_str, desc_replacement)
+
             result.append({
                 "id": str(txn.id),
                 "amount": txn.amount / 100,  # Convert paise to rupees
                 "payment_type": txn.payment_type or "rent",
                 "payment_method": txn.payment_method or "online",
                 "status": txn.status.value if hasattr(txn.status, 'value') else str(txn.status),
-                "description": txn.description,
+                "description": description,
                 "offline_notes": txn.offline_notes,
                 "offline_reference": txn.offline_reference,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
