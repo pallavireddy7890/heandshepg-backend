@@ -236,7 +236,11 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_amenities JSONB",
                 # === ROOMS ===
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS floor_number VARCHAR(50) DEFAULT '1'",
-                "ALTER TABLE rooms ALTER COLUMN floor_number TYPE VARCHAR(50) USING floor_number::text",
+                """DO $$ BEGIN
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'rooms' AND column_name = 'floor_number' AND data_type = 'integer') THEN
+                        ALTER TABLE rooms ALTER COLUMN floor_number TYPE VARCHAR(50) USING floor_number::text;
+                    END IF;
+                END $$""",
                 "ALTER TABLE rooms ALTER COLUMN floor_number SET DEFAULT '1'",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS room_number VARCHAR(20)",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS deposit INTEGER",

@@ -44,6 +44,14 @@ def parse_transaction_metadata(description: str):
 
 def calculate_transaction_breakdown(txn, booking_details: Optional[dict] = None, booking_obj = None) -> dict:
     """Calculate the breakdown of payment categories for a transaction in INR."""
+    # (1) Return all-zero breakdown when there is no booking context
+    if not txn.booking_id:
+        return {
+            "rent": 0.0,
+            "security_deposit": 0.0,
+            "maintenance": 0.0
+        }
+
     _wallet_contribution, total_amount, _ = parse_transaction_metadata(txn.description)
     total_amt_inr = (total_amount / 100) if total_amount > 0 else (txn.amount / 100)
     
@@ -53,7 +61,29 @@ def calculate_transaction_breakdown(txn, booking_details: Optional[dict] = None,
         "maintenance": 0.0
     }
     
-    p_type = txn.payment_type or "rent"
+    p_type = txn.payment_type
+    
+    # (2) Infer p_type from the description when payment_type is missing or "total"
+    desc_lower = (txn.description or "").lower()
+    inferred_type = None
+    has_rent = "rent" in desc_lower
+    has_deposit = "deposit" in desc_lower or "security" in desc_lower
+    has_maint = "maintenance" in desc_lower or "maint" in desc_lower
+    
+    # If only one of the categories is mentioned, infer that type
+    if has_rent and not has_deposit and not has_maint:
+        inferred_type = "rent"
+    elif has_deposit and not has_rent and not has_maint:
+        inferred_type = "deposit"
+    elif has_maint and not has_rent and not has_deposit:
+        inferred_type = "maintenance"
+        
+    if not p_type or p_type == "total":
+        if inferred_type:
+            p_type = inferred_type
+        elif not p_type:
+            p_type = "total"
+    
     if p_type == "rent":
         breakdown["rent"] = total_amt_inr
     elif p_type == "deposit":
