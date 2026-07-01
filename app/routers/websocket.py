@@ -1,7 +1,7 @@
 """WebSocket for real-time messaging."""
 from typing import Dict, List
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
 from sqlalchemy.orm import Session
@@ -104,24 +104,27 @@ async def websocket_chat(
         await websocket.close(code=4001, reason="Authentication failed")
         return
     
-    is_first_connection = user_id not in manager.active_connections
+    was_offline = (user_id not in manager.active_connections) and (user_id not in notification_manager.active_connections)
     await manager.connect(websocket, user_id)
     
-    if is_first_connection:
+    if was_offline:
         db = next(get_db())
         try:
             user = db.query(User).filter(User.id == UUID(user_id)).first()
             if user:
                 user.is_online = True
+                user.last_seen_at = datetime.now(timezone.utc)
                 db.commit()
                 
                 partners = get_chat_partners(db, user_id)
-                await manager.broadcast_to_users({
+                status_msg = {
                     "type": "user_status",
                     "user_id": user_id,
                     "is_online": True,
-                    "last_seen_at": datetime.utcnow().isoformat()
-                }, partners)
+                    "last_seen_at": datetime.now(timezone.utc).isoformat()
+                }
+                await manager.broadcast_to_users(status_msg, partners)
+                await notification_manager.broadcast_to_users(status_msg, partners)
         except Exception:
             pass
         finally:
@@ -160,46 +163,52 @@ async def websocket_chat(
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
-        if user_id not in manager.active_connections:
+        is_still_online = (user_id in manager.active_connections) or (user_id in notification_manager.active_connections)
+        if not is_still_online:
             db = next(get_db())
             try:
                 user = db.query(User).filter(User.id == UUID(user_id)).first()
                 if user:
                     user.is_online = False
-                    now = datetime.utcnow()
+                    now = datetime.now(timezone.utc)
                     user.last_seen_at = now
                     db.commit()
                     
                     partners = get_chat_partners(db, user_id)
-                    await manager.broadcast_to_users({
+                    status_msg = {
                         "type": "user_status",
                         "user_id": user_id,
                         "is_online": False,
                         "last_seen_at": now.isoformat()
-                    }, partners)
+                    }
+                    await manager.broadcast_to_users(status_msg, partners)
+                    await notification_manager.broadcast_to_users(status_msg, partners)
             except Exception:
                 pass
             finally:
                 db.close()
     except Exception as e:
         manager.disconnect(websocket, user_id)
-        if user_id not in manager.active_connections:
+        is_still_online = (user_id in manager.active_connections) or (user_id in notification_manager.active_connections)
+        if not is_still_online:
             db = next(get_db())
             try:
                 user = db.query(User).filter(User.id == UUID(user_id)).first()
                 if user:
                     user.is_online = False
-                    now = datetime.utcnow()
+                    now = datetime.now(timezone.utc)
                     user.last_seen_at = now
                     db.commit()
                     
                     partners = get_chat_partners(db, user_id)
-                    await manager.broadcast_to_users({
+                    status_msg = {
                         "type": "user_status",
                         "user_id": user_id,
                         "is_online": False,
                         "last_seen_at": now.isoformat()
-                    }, partners)
+                    }
+                    await manager.broadcast_to_users(status_msg, partners)
+                    await notification_manager.broadcast_to_users(status_msg, partners)
             except Exception:
                 pass
             finally:
@@ -225,8 +234,32 @@ async def websocket_notifications(
         await websocket.close(code=4001, reason="Authentication failed")
         return
     
+    was_offline = (user_id not in manager.active_connections) and (user_id not in notification_manager.active_connections)
     await notification_manager.connect(websocket, user_id)
     
+    if was_offline:
+        db = next(get_db())
+        try:
+            user = db.query(User).filter(User.id == UUID(user_id)).first()
+            if user:
+                user.is_online = True
+                user.last_seen_at = datetime.now(timezone.utc)
+                db.commit()
+                
+                partners = get_chat_partners(db, user_id)
+                status_msg = {
+                    "type": "user_status",
+                    "user_id": user_id,
+                    "is_online": True,
+                    "last_seen_at": datetime.now(timezone.utc).isoformat()
+                }
+                await manager.broadcast_to_users(status_msg, partners)
+                await notification_manager.broadcast_to_users(status_msg, partners)
+        except Exception:
+            pass
+        finally:
+            db.close()
+            
     try:
         while True:
             # Notifications are primarily server-to-client, 
@@ -234,8 +267,56 @@ async def websocket_notifications(
             await websocket.receive_text()
     except WebSocketDisconnect:
         notification_manager.disconnect(websocket, user_id)
+        is_still_online = (user_id in manager.active_connections) or (user_id in notification_manager.active_connections)
+        if not is_still_online:
+            db = next(get_db())
+            try:
+                user = db.query(User).filter(User.id == UUID(user_id)).first()
+                if user:
+                    user.is_online = False
+                    now = datetime.now(timezone.utc)
+                    user.last_seen_at = now
+                    db.commit()
+                    
+                    partners = get_chat_partners(db, user_id)
+                    status_msg = {
+                        "type": "user_status",
+                        "user_id": user_id,
+                        "is_online": False,
+                        "last_seen_at": now.isoformat()
+                    }
+                    await manager.broadcast_to_users(status_msg, partners)
+                    await notification_manager.broadcast_to_users(status_msg, partners)
+            except Exception:
+                pass
+            finally:
+                db.close()
     except Exception:
         notification_manager.disconnect(websocket, user_id)
+        is_still_online = (user_id in manager.active_connections) or (user_id in notification_manager.active_connections)
+        if not is_still_online:
+            db = next(get_db())
+            try:
+                user = db.query(User).filter(User.id == UUID(user_id)).first()
+                if user:
+                    user.is_online = False
+                    now = datetime.now(timezone.utc)
+                    user.last_seen_at = now
+                    db.commit()
+                    
+                    partners = get_chat_partners(db, user_id)
+                    status_msg = {
+                        "type": "user_status",
+                        "user_id": user_id,
+                        "is_online": False,
+                        "last_seen_at": now.isoformat()
+                    }
+                    await manager.broadcast_to_users(status_msg, partners)
+                    await notification_manager.broadcast_to_users(status_msg, partners)
+            except Exception:
+                pass
+            finally:
+                db.close()
 
 
 async def handle_send_message(db: Session, from_user_id: str, message_data: dict, manager: ConnectionManager):
@@ -278,7 +359,7 @@ async def handle_send_message(db: Session, from_user_id: str, message_data: dict
         "conversation_id": str(conversation.id),
         "sender_id": from_user_id,
         "content": content,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     
     await manager.broadcast_to_users(
