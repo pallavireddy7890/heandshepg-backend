@@ -104,9 +104,18 @@ class RentManagementItem(BaseModel):
     billing_cycle_end: Optional[date] = None
 
 
+class RentManagementStats(BaseModel):
+    total_tenants: int
+    paid_count: int
+    unpaid_count: int
+    partial_count: int
+    upcoming_count: int
+    collected_amount: float
+
+
 class RentManagementResponse(BaseModel):
     tenants: List[RentManagementItem]
-    stats: dict
+    stats: RentManagementStats
 
 
 # ========== Helpers ==========
