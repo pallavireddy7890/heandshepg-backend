@@ -791,14 +791,13 @@ async def get_tenant_transaction_history(
         from app.services.wallet_service import calculate_transaction_breakdown
         result = []
         for txn in transactions:
-            description = txn.description or ""
+            description = txn.description  # preserve None if absent
             booking_uuid_str = str(booking.id)
-            if booking_uuid_str in description:
+            if description and booking_uuid_str in description:
                 if f"booking {booking_uuid_str}" in description:
                     description = description.replace(f"booking {booking_uuid_str}", desc_replacement)
                 else:
                     description = description.replace(booking_uuid_str, desc_replacement)
-
             result.append({
                 "id": str(txn.id),
                 "amount": txn.amount / 100,  # Convert paise to rupees
