@@ -42,6 +42,57 @@ def parse_transaction_metadata(description: str):
     return wallet_contribution, total_amount, clean_desc
 
 
+def calculate_transaction_breakdown(txn, booking_details: Optional[dict] = None, booking_obj = None) -> dict:
+    """Calculate the breakdown of payment categories for a transaction in INR."""
+    wallet_contribution, total_amount, _ = parse_transaction_metadata(txn.description)
+    total_amt_inr = (total_amount / 100) if total_amount > 0 else (txn.amount / 100)
+    
+    breakdown = {
+        "rent": 0.0,
+        "security_deposit": 0.0,
+        "maintenance": 0.0
+    }
+    
+    p_type = txn.payment_type or "rent"
+    if p_type == "rent":
+        breakdown["rent"] = total_amt_inr
+    elif p_type == "deposit":
+        breakdown["security_deposit"] = total_amt_inr
+    elif p_type == "maintenance":
+        breakdown["maintenance"] = total_amt_inr
+    elif p_type == "total":
+        if booking_details or booking_obj:
+            rent_val = float(booking_details.get("amount") or 0.0) if booking_details else float(booking_obj.amount or 0.0)
+            deposit_val = float(booking_details.get("security_deposit") or 0.0) if booking_details else float(booking_obj.security_deposit or 0.0)
+            maint_val = float(booking_details.get("maintenance_charge") or 0.0) if booking_details else float(booking_obj.maintenance_charge or 0.0)
+            
+            remaining = total_amt_inr
+            
+            # Priority 1: Security Deposit
+            allocated_deposit = min(remaining, deposit_val)
+            remaining -= allocated_deposit
+            
+            # Priority 2: Maintenance
+            allocated_maint = min(remaining, maint_val)
+            remaining -= allocated_maint
+            
+            # Priority 3: Rent
+            allocated_rent = min(remaining, rent_val)
+            remaining -= allocated_rent
+            
+            # Leftover/excess goes to Rent
+            if remaining > 0:
+                allocated_rent += remaining
+                
+            breakdown["rent"] = allocated_rent
+            breakdown["security_deposit"] = allocated_deposit
+            breakdown["maintenance"] = allocated_maint
+        else:
+            breakdown["rent"] = total_amt_inr
+            
+    return breakdown
+
+
 class WalletService:
     """Service for wallet operations."""
     
@@ -639,6 +690,7 @@ class WalletService:
                 "razorpay_payment_id": txn.razorpay_payment_id,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
                 "booking_details": booking_details,
+                "breakdown": calculate_transaction_breakdown(txn, booking_details=booking_details),
             })
         
         return result

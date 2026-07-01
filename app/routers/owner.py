@@ -731,6 +731,7 @@ async def get_tenant_transaction_history(
             ])
         ).order_by(WalletTransaction.created_at.desc()).all()
 
+        from app.services.wallet_service import calculate_transaction_breakdown
         result = []
         for txn in transactions:
             result.append({
@@ -743,6 +744,7 @@ async def get_tenant_transaction_history(
                 "offline_notes": txn.offline_notes,
                 "offline_reference": txn.offline_reference,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
+                "breakdown": calculate_transaction_breakdown(txn, booking_obj=booking),
             })
 
         return {
