@@ -702,6 +702,7 @@ class WalletService:
             
             result.append({
                 "id": str(txn.id),
+                "booking_id": str(txn.booking_id) if txn.booking_id else None,
                 "amount": txn.amount,
                 "amount_inr": txn.amount / 100,
                 "total_amount_inr": total_amount / 100 if total_amount > 0 else txn.amount / 100,
@@ -710,6 +711,8 @@ class WalletService:
                 "status": txn.status.value if hasattr(txn.status, 'value') else txn.status,
                 "payer_name": payer_profile.name if payer_profile else None,
                 "receiver_name": receiver_profile.name if receiver_profile else None,
+                "customer_name": payer_profile.name if payer_profile else None,
+                "tenant_name": payer_profile.name if payer_profile else None,
                 "property_title": property_title,
                 "description": description,
                 "otp_verified": txn.otp_verified,
