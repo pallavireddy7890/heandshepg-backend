@@ -111,6 +111,10 @@ class RentManagementStats(BaseModel):
     partial_count: int
     upcoming_count: int
     collected_amount: float
+    paid_deposits_count: int = 0
+    unpaid_deposits_count: int = 0
+    total_deposits_collected: float = 0.0
+    total_deposits_pending: float = 0.0
 
 
 class RentManagementResponse(BaseModel):
@@ -740,6 +744,21 @@ async def get_rent_management_data(
             )
         )
 
+        # Calculate deposit stats
+        paid_deposits_count = 0
+        unpaid_deposits_count = 0
+        total_deposits_collected = 0.0
+        total_deposits_pending = 0.0
+
+        for t in tenants_data:
+            if t["security_deposit"] > 0:
+                total_deposits_collected += t["security_paid"]
+                total_deposits_pending += max(0.0, float(t["security_deposit"]) - float(t["security_paid"]))
+                if t["deposit_paid"]:
+                    paid_deposits_count += 1
+                else:
+                    unpaid_deposits_count += 1
+
         return {
             "tenants": tenants_data,
             "stats": {
@@ -748,7 +767,11 @@ async def get_rent_management_data(
                 "unpaid_count": unpaid_count,
                 "partial_count": partial_count,
                 "upcoming_count": upcoming_count,
-                "collected_amount": sum(t.get('rent_paid_this_period', 0) for t in tenants_data)
+                "collected_amount": sum(t.get('rent_paid_this_period', 0) for t in tenants_data),
+                "paid_deposits_count": paid_deposits_count,
+                "unpaid_deposits_count": unpaid_deposits_count,
+                "total_deposits_collected": total_deposits_collected,
+                "total_deposits_pending": total_deposits_pending
             }
         }
     except Exception as e:
