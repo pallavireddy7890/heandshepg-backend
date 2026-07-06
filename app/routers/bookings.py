@@ -785,12 +785,14 @@ async def request_vacate(
     db.commit()
     db.refresh(booking)
     
-    # Fetch property and customer details for notification
+    # Fetch property, room, and customer details for notification
     property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+    room_obj = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
     customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
     
     property_title = property_obj.title if property_obj else "Property"
     customer_name = customer_profile.name if customer_profile else current_user.email
+    room_details = f" (Floor {room_obj.floor_number}, Room {room_obj.room_number})" if room_obj else ""
 
     # Calculate deposit, maintenance, and unpaid invoices (deductions)
     deposit_amount = booking.security_deposit or 0
@@ -806,7 +808,7 @@ async def request_vacate(
     final_refund = deposit_amount - maintenance_charges - deductions
     
     owner_message = (
-        f"{customer_name} has requested to vacate from {property_title}.\n\n"
+        f"{customer_name} has requested to vacate from {property_title}{room_details}.\n\n"
         f"Refund & Dues Details:\n"
         f"• Deposit Amount: ₹{deposit_amount}\n"
         f"• Maintenance Charges (Unpaid): ₹{maintenance_charges}\n"
@@ -816,7 +818,7 @@ async def request_vacate(
     )
     
     tenant_message = (
-        f"Your request to vacate from {property_title} has been submitted.\n\n"
+        f"Your request to vacate from {property_title}{room_details} has been submitted.\n\n"
         f"Estimated Refund Breakdown:\n"
         f"• Deposit Amount: ₹{deposit_amount}\n"
         f"• Maintenance Charges (Unpaid): ₹{maintenance_charges}\n"
