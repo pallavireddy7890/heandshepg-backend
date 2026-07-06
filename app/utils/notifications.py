@@ -173,6 +173,29 @@ async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_
     )
 
 
+async def notify_booking_cancelled(
+    db: Session,
+    user_id: uuid.UUID,
+    property_title: str,
+    initiator_name: str,
+    link: str,
+    cancel_reason: str = None
+):
+    """Notify a user (owner or tenant) when a booking is cancelled."""
+    msg = f"Booking for {property_title} has been cancelled by {initiator_name}."
+    if cancel_reason:
+        msg += f" Reason: {cancel_reason}"
+    return await create_notification(
+        db=db,
+        user_id=user_id,
+        title="Booking Cancelled",
+        message=msg,
+        notification_type="warning",
+        link=link,
+        send_external=True
+    )
+
+
 async def notify_payment_received(
     db: Session, 
     owner_id: uuid.UUID, 

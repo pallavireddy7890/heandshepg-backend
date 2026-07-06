@@ -17,7 +17,12 @@ from app.schemas import (
     BookingExtend,
 )
 from app.utils.security import get_current_user, require_role
-from app.utils.notifications import notify_booking_created, notify_booking_accepted, notify_booking_rejected
+from app.utils.notifications import (
+    notify_booking_created,
+    notify_booking_accepted,
+    notify_booking_rejected,
+    notify_booking_cancelled,
+)
 from app.services.vacancy import get_bed_vacancy, is_bed_available_for_extension, sync_room_vacancy
 
 require_admin = require_role("admin")
@@ -709,6 +714,40 @@ async def cancel_booking(
     
     db.commit()
     db.refresh(booking)
+
+    # Notify the other party about the cancellation
+    try:
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        property_title = property_obj.title if property_obj else "Property"
+
+        if current_user.id == booking.customer_id:
+            # Tenant cancelled -> Notify Owner
+            customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+            customer_name = customer_profile.name if customer_profile else current_user.email
+            await notify_booking_cancelled(
+                db=db,
+                user_id=booking.owner_id,
+                property_title=property_title,
+                initiator_name=customer_name,
+                link="/owner/bookings?tab=cancelled",
+                cancel_reason=booking.cancel_reason
+            )
+        else:
+            # Owner cancelled -> Notify Tenant
+            owner_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+            owner_name = owner_profile.name if owner_profile else "Property Owner"
+            await notify_booking_cancelled(
+                db=db,
+                user_id=booking.customer_id,
+                property_title=property_title,
+                initiator_name=owner_name,
+                link="/bookings",
+                cancel_reason=booking.cancel_reason
+            )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send cancellation notification: {e}")
+
     return booking
 
 
