@@ -362,19 +362,24 @@ def cleanup_expired_bookings():
             if booking.room_id:
                 sync_room_vacancy(db, booking.room_id)
         
-        # 2. Find accepted bookings (unpaid) older than 24 hours
-        one_day_ago = datetime.utcnow() - timedelta(hours=24)
-        
+        # 2. Find accepted bookings (unpaid)
         unpaid_bookings = db.query(Booking).filter(
-            and_(
-                Booking.status == 'accepted',
-                Booking.updated_at < one_day_ago
-            )
+            Booking.status == 'accepted'
         ).all()
         
+        expired_unpaid_count = 0
         for booking in unpaid_bookings:
+            # Load property to get custom payment_expiry_hours
+            property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+            expiry_hours = property_obj.payment_expiry_hours if property_obj and property_obj.payment_expiry_hours is not None else 24
+            
+            expiry_limit = datetime.utcnow() - timedelta(hours=expiry_hours)
+            if booking.updated_at >= expiry_limit:
+                continue
+                
             booking.status = 'cancelled'
             logger.info(f"Expired accepted unpaid booking: {booking.id}")
+            expired_unpaid_count += 1
             
             # Release the physical bed hold
             if booking.bed_id:
@@ -393,7 +398,7 @@ def cleanup_expired_bookings():
                     db=db,
                     user_id=booking.customer_id,
                     title="Booking Expired",
-                    message="Your booking request was accepted but has expired due to non-payment within 24 hours.",
+                    message=f"Your booking request was accepted but has expired due to non-payment within {expiry_hours} hours.",
                     notification_type="info",
                     link="/bookings"
                 )
@@ -401,7 +406,7 @@ def cleanup_expired_bookings():
                     db=db,
                     user_id=booking.owner_id,
                     title="Booking Expired (Unpaid)",
-                    message="An accepted booking request expired because the tenant did not pay within 24 hours. The bed is now available.",
+                    message=f"An accepted booking request expired because the tenant did not pay within {expiry_hours} hours. The bed is now available.",
                     notification_type="info",
                     link="/owner/bookings"
                 )
@@ -409,7 +414,7 @@ def cleanup_expired_bookings():
                 logger.warning(f"Failed to send expiration notifications for booking {booking.id}: {e}")
         
         db.commit()
-        logger.info(f"Marked {len(expired_requests)} unaccepted requests and {len(unpaid_bookings)} unpaid bookings as cancelled due to expiration")
+        logger.info(f"Marked {len(expired_requests)} unaccepted requests and {expired_unpaid_count} unpaid bookings as cancelled due to expiration")
         
     except Exception as e:
         logger.error(f"Error in booking cleanup: {e}")

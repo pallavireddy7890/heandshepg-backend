@@ -290,6 +290,7 @@ async def list_bookings(
                     "locality": property_obj.locality if property_obj else None,
                     "photos": property_obj.photos if property_obj else None,
                     "grace_period": property_obj.grace_period if property_obj else 0,
+                    "payment_expiry_hours": property_obj.payment_expiry_hours if property_obj else 24,
                 } if property_obj else None,
                 "room": {
                     "room_type": room_obj.room_type,
@@ -423,6 +424,7 @@ async def get_booking(
         "city": property.city,
         "locality": property.locality,
         "photos": property.photos,
+        "payment_expiry_hours": property.payment_expiry_hours,
     } if property else None
     response.room = {
         "id": str(room.id),

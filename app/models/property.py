@@ -33,6 +33,7 @@ class Property(Base):
     monthly_rent = Column(Integer, nullable=True)
     deposit = Column(Integer, nullable=True)
     grace_period = Column(Integer, default=0)
+    payment_expiry_hours = Column(Integer, default=24)
     rules = Column(Text)
     photos = Column(ARRAY(Text))
     available_from = Column(Date, nullable=False)

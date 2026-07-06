@@ -347,6 +347,7 @@ async def get_owner_properties(
                 "monthly_rent": prop.monthly_rent,
                 "deposit": prop.deposit,
                 "grace_period": prop.grace_period,
+                "payment_expiry_hours": prop.payment_expiry_hours,
                 "gender_preference": prop.gender_preference,
                 "amenities": prop.amenities or [],
                 "photos": prop.photos or [],
