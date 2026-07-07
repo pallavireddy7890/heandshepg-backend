@@ -38,6 +38,10 @@ async def list_all_bookings(
     limit: int = Query(default=50, le=100),
 ):
     """List all bookings on the platform (admin only)."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings()
+
     from sqlalchemy.orm import joinedload
     
     query = db.query(Booking).options(
@@ -168,6 +172,10 @@ async def list_bookings(
     property_id: Optional[UUID] = None,
 ):
     """List current user's bookings (as customer or owner)."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings()
+
     try:
         query = db.query(Booking).filter(
             (Booking.customer_id == current_user.id) | (Booking.owner_id == current_user.id)
@@ -320,6 +328,10 @@ async def get_booking(
     db: Session = Depends(get_db)
 ):
     """Get booking details."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings()
+
     booking = db.query(Booking).filter(
         Booking.id == booking_id,
         (Booking.customer_id == current_user.id) | (Booking.owner_id == current_user.id)
@@ -446,6 +458,10 @@ async def create_booking(
     db: Session = Depends(get_db)
 ):
     """Create a new booking request."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings()
+
     # Get property
     property = db.query(Property).filter(Property.id == booking_data.property_id).first()
     if not property:

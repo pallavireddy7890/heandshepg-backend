@@ -1,5 +1,5 @@
 """Background scheduler for rent reminders and other automated tasks."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 import logging
 import asyncio
@@ -373,7 +373,11 @@ def cleanup_expired_bookings():
             property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
             expiry_hours = property_obj.payment_expiry_hours if property_obj and property_obj.payment_expiry_hours is not None else 24
             
-            expiry_limit = datetime.utcnow() - timedelta(hours=expiry_hours)
+            if booking.updated_at and booking.updated_at.tzinfo is not None:
+                expiry_limit = datetime.now(timezone.utc) - timedelta(hours=expiry_hours)
+            else:
+                expiry_limit = datetime.utcnow() - timedelta(hours=expiry_hours)
+                
             if booking.updated_at >= expiry_limit:
                 continue
                 

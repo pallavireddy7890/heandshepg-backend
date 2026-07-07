@@ -309,6 +309,10 @@ async def property_availability(
     db: Session = Depends(get_db)
 ):
     """Get bed availability for all rooms in a property over a date range."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings()
+
     property_obj = db.query(Property).filter(Property.id == property_id).first()
     if not property_obj:
         raise HTTPException(status_code=404, detail="Property not found")
@@ -325,6 +329,10 @@ async def room_availability(
     db: Session = Depends(get_db)
 ):
     """Get bed availability for a specific room over a date range."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings()
+
     room = db.query(Room).filter(
         Room.id == room_id,
         Room.property_id == property_id

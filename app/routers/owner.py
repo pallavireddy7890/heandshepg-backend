@@ -1281,6 +1281,25 @@ async def remove_tenant_from_room(
         if not property_obj or property_obj.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="Not authorized")
 
+        # Check if tenant is active
+        booking_status_str = booking.status.value if hasattr(booking.status, 'value') else str(booking.status)
+        if booking_status_str in ["active", "paid", "checked_in"]:
+            if booking.customer_id:
+                from app.utils.notifications import create_notification
+                prop_title = property_obj.title if property_obj else "your room"
+                await create_notification(
+                    db=db,
+                    user_id=booking.customer_id,
+                    title="Tenant Active Alert",
+                    message=f"Your tenant account status is active at {prop_title}. A checkout/removal attempt was prevented.",
+                    notification_type="warning",
+                    link="/bookings"
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot checkout this tenant because their booking is currently active. The booking must be completed, cancelled, or vacated first."
+            )
+
         # Cancel the booking
         booking.status = "vacated"
 
