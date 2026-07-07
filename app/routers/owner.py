@@ -146,28 +146,27 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
     start_dt = datetime.combine(period_start, datetime.min.time())
     end_dt = datetime.combine(period_end, datetime.max.time())
 
-    # Query recurring payments (rent and maintenance) for this booking in this billing cycle
+    # Query recurring payments (rent) for this booking in this billing cycle
     payments = db.query(WalletTransaction).filter(
         WalletTransaction.booking_id == booking.id,
         WalletTransaction.status == TransactionStatus.completed,
-        WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
+        WalletTransaction.payment_type.in_(['rent', 'total']),
         WalletTransaction.created_at >= start_dt,
         WalletTransaction.created_at <= end_dt
     ).all()
 
-    # Query security deposit payments across all time (since it is a lifetime payment)
+    # Query security deposit and maintenance payments across all time (since they are lifetime/upfront payments)
     deposit_payments = db.query(WalletTransaction).filter(
         WalletTransaction.booking_id == booking.id,
         WalletTransaction.status == TransactionStatus.completed,
-        WalletTransaction.payment_type.in_(['deposit', 'total'])
+        WalletTransaction.payment_type.in_(['deposit', 'total', 'maintenance'])
     ).all()
 
     rent_paid = 0
-    total_maint_txns_amount = 0
     p_date = None
     p_type = None
 
-    # Calculate recurring rent and maintenance
+    # Calculate recurring rent
     for p in payments:
         if not p_date or p.created_at > p_date:
             p_date = p.created_at
@@ -177,12 +176,10 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
             rent_paid += p.amount / 100
         elif p.payment_type == 'total':
             rent_paid += booking.amount
-            total_maint_txns_amount += (booking.maintenance_charge or 0)
-        elif p.payment_type == 'maintenance':
-            total_maint_txns_amount += p.amount / 100
 
-    # Calculate completed deposit transactions (lifetime)
+    # Calculate completed deposit and maintenance transactions (lifetime)
     total_deposit_txns_amount = 0
+    total_maint_txns_amount = 0
     for p in deposit_payments:
         if not p_date or p.created_at > p_date:
             p_date = p.created_at
@@ -192,6 +189,9 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
             total_deposit_txns_amount += p.amount / 100
         elif p.payment_type == 'total':
             total_deposit_txns_amount += (booking.security_deposit or 0)
+            total_maint_txns_amount += (booking.maintenance_charge or 0)
+        elif p.payment_type == 'maintenance':
+            total_maint_txns_amount += p.amount / 100
 
     # Allocate lifetime deposit transactions to security deposit and maintenance charge
     security_cap = float(booking.security_deposit or 0)
