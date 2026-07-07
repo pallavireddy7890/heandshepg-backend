@@ -7,46 +7,60 @@ from app.services.vacancy import sync_room_vacancy
 
 class BookingService:
     @staticmethod
-    def handle_payment_completion(db: Session, booking_id: UUID, payment_type: str) -> tuple[bool, str]:
-        """
-        Handle booking state updates after a payment is verified.
-        Consolidates logic for updating flags, status, and vacancy.
-        """
+    def handle_payment_completion(db: Session, booking_id: UUID, payment_type: str = None) -> tuple[bool, str]:
+        """Recalculate booking payment flags and update overall status."""
+        from app.models.wallet import WalletTransaction, TransactionStatus
+        from app.services.vacancy import sync_room_vacancy
+        from sqlalchemy import func
+        
         booking = db.query(Booking).filter(Booking.id == booking_id).first()
         if not booking:
             return False, "Booking not found"
             
-        # 1. Update specific payment flags based on cumulative paid amounts
-        from datetime import date, datetime
+        # 1. Recalculate all paid amounts from database transactions
+        # Query recurring payments (rent) for this booking in the current billing cycle
+        from datetime import datetime, date
         from app.services.wallet_service import WalletService
-        from app.models.wallet import WalletTransaction, TransactionStatus
+        import calendar
         
-        # Calculate start and end of current cycle for recurring charges (rent, maintenance)
-        period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
+        # Determine cycle start and end based on current time or booking reference
+        today = date.today()
+        ref_day = min(booking.start_date.day, calendar.monthrange(today.year, today.month)[1])
+        reference_date = date(today.year, today.month, ref_day)
+        period_start, period_end = WalletService.get_billing_period(booking.start_date, reference_date)
+        
         start_dt = datetime.combine(period_start, datetime.min.time())
         end_dt = datetime.combine(period_end, datetime.max.time())
         
-        # Query recurring cycle payments (rent, maintenance, total)
-        cycle_payments = db.query(WalletTransaction).filter(
+        rent_payments = db.query(WalletTransaction).filter(
             WalletTransaction.booking_id == booking.id,
             WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
+            WalletTransaction.payment_type.in_(['rent', 'total']),
             WalletTransaction.created_at >= start_dt,
             WalletTransaction.created_at <= end_dt
         ).all()
         
         rent_paid_amt = 0
-        total_maint_txns_amount = 0
-        for p in cycle_payments:
+        for p in rent_payments:
             if p.payment_type == 'rent':
                 rent_paid_amt += p.amount / 100
             elif p.payment_type == 'total':
                 rent_paid_amt += booking.amount
-                total_maint_txns_amount += (booking.maintenance_charge or 0)
-            elif p.payment_type == 'maintenance':
-                total_maint_txns_amount += p.amount / 100
                 
-        # Query lifetime security deposit payments (deposit, total)
+        # Query security deposit and maintenance payments across all time (since they are lifetime/upfront payments)
+        maint_payments = db.query(WalletTransaction).filter(
+            WalletTransaction.booking_id == booking.id,
+            WalletTransaction.status == TransactionStatus.completed,
+            WalletTransaction.payment_type.in_(['maintenance', 'total'])
+        ).all()
+        
+        total_maint_txns_amount = 0
+        for p in maint_payments:
+            if p.payment_type == 'maintenance':
+                total_maint_txns_amount += p.amount / 100
+            elif p.payment_type == 'total':
+                total_maint_txns_amount += (booking.maintenance_charge or 0)
+                
         all_payments = db.query(WalletTransaction).filter(
             WalletTransaction.booking_id == booking.id,
             WalletTransaction.status == TransactionStatus.completed,
@@ -82,6 +96,10 @@ class BookingService:
         # If at least rent is paid, consider them "checked_in" (occupying bed)
         elif booking.rent_paid:
             booking.status = "checked_in"
+        else:
+            # If rent is not fully paid and status was paid, downgrade to checked_in
+            if booking.status == "paid":
+                booking.status = "checked_in"
             
         # 4. SYNC VACANCY
         # This fixes the double-decrement bug by recalculating the absolute truth
@@ -95,4 +113,4 @@ class BookingService:
             ReferralService.complete_referral_for_booking(db, booking.customer_id, booking.id)
             
         db.commit()
-        return True, "Booking updated successfully"
+        return True, "Booking status updated successfully"

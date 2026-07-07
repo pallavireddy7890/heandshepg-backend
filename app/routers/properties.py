@@ -454,9 +454,43 @@ async def update_room(
     # these are managed exclusively by the booking system (add/remove tenant).
     update_data.pop("vacancy_count", None)
     update_data.pop("is_available", None)
+
+    # Track which financial fields changed so we can sync active bookings
+    price_changed = "price" in update_data and update_data["price"] != room.price
+    deposit_changed = "security_deposit" in update_data and update_data["security_deposit"] != room.security_deposit
+    maintenance_changed = "maintenance_charge" in update_data and update_data["maintenance_charge"] != room.maintenance_charge
+
     for field, value in update_data.items():
         setattr(room, field, value)
-    
+
+    # Sync active bookings in this room when financial fields change,
+    # so rent management and payment collection use the updated values.
+    if price_changed or deposit_changed or maintenance_changed:
+        from app.models.booking import Booking, BookingStatus
+        from app.services.booking_service import BookingService
+        active_bookings = db.query(Booking).filter(
+            Booking.room_id == room_id,
+            Booking.status.in_([
+                BookingStatus.active,
+                BookingStatus.paid,
+                BookingStatus.checked_in,
+                BookingStatus.vacate_requested,
+            ])
+        ).all()
+        for bk in active_bookings:
+            if price_changed:
+                bk.amount = room.price
+            if deposit_changed and not bk.deposit_paid:
+                bk.security_deposit = room.security_deposit or 0
+            if maintenance_changed and not bk.maintenance_paid:
+                bk.maintenance_charge = room.maintenance_charge or 0
+            
+            # Flush changes to booking so handle_payment_completion sees the updated amount/deposit/charge
+            db.flush()
+            
+            # Recalculate rent_paid, deposit_paid, maintenance_paid flags and booking status
+            BookingService.handle_payment_completion(db, bk.id)
+
     db.commit()
     db.refresh(room)
     sync_property_rent_and_deposit(db, property_id)
