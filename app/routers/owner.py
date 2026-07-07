@@ -1300,6 +1300,13 @@ async def remove_tenant_from_room(
                 detail="Cannot checkout this tenant because their booking is currently active. The booking must be completed, cancelled, or vacated first."
             )
 
+        # Release the bed
+        if booking.bed_id:
+            bed = db.query(RoomBed).filter(RoomBed.id == booking.bed_id).first()
+            if bed:
+                bed.status = "available"
+                bed.current_tenant_id = None
+
         # Cancel the booking
         booking.status = "vacated"
 

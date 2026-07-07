@@ -454,6 +454,17 @@ def complete_ended_stays():
             # Mark as completed
             booking.status = 'completed'
             
+            # Release the bed
+            if booking.bed_id:
+                bed = db.query(RoomBed).filter(RoomBed.id == booking.bed_id).first()
+                if bed:
+                    bed.status = "available"
+                    bed.current_tenant_id = None
+            
+            # Sync room vacancy
+            if booking.room_id:
+                sync_room_vacancy(db, booking.room_id)
+            
             # Get property and room info
             property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
             property_title = property_obj.title if property_obj else "Property"
