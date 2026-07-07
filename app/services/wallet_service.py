@@ -700,6 +700,21 @@ class WalletService:
             elif property_title:
                 description = f"Payment for {property_title}"
             
+            # Get payment time in IST
+            from datetime import timezone, timedelta
+            ist = timezone(timedelta(hours=5, minutes=30))
+            created_at_utc = txn.created_at
+            if created_at_utc.tzinfo is None:
+                created_at_utc = created_at_utc.replace(tzinfo=timezone.utc)
+            created_at_ist = created_at_utc.astimezone(ist)
+            payment_time = created_at_ist.strftime("%d %b %Y %I:%M %p")
+
+            billing_period = None
+            if txn.booking_id and txn.payment_type in ['rent', 'total', 'maintenance']:
+                if txn.booking_id and booking:
+                    period_start, period_end = WalletService.get_billing_period(booking.start_date, txn.created_at.date())
+                    billing_period = f"{period_start.strftime('%d %b %Y')} - {period_end.strftime('%d %b %Y')}"
+
             result.append({
                 "id": str(txn.id),
                 "booking_id": str(txn.booking_id) if txn.booking_id else None,
@@ -722,6 +737,8 @@ class WalletService:
                 "offline_reference": txn.offline_reference,
                 "razorpay_payment_id": txn.razorpay_payment_id,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
+                "payment_time": payment_time,
+                "billing_period": billing_period,
                 "booking_details": booking_details,
                 "breakdown": calculate_transaction_breakdown(txn, booking_details=booking_details),
             })

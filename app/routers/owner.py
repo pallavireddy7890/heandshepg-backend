@@ -127,26 +127,43 @@ class RentManagementResponse(BaseModel):
 def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: int):
     from sqlalchemy import and_, or_
     from app.models.wallet import WalletTransaction, TransactionStatus
-    from datetime import datetime, date
+    from datetime import datetime, date, timedelta
     from app.services.wallet_service import WalletService
     import calendar
 
     today = date.today()
 
     # Use billing cycle (based on tenant's start_date) instead of calendar month
-    # This matches the logic used in collect-offline-payment endpoint
-    # to prevent mismatch between displayed due amount and actual remaining amount.
-    #
-    # For past months that don't contain the current billing cycle,
-    # we approximate by using the Nth of that month as reference.
     ref_day = min(booking.start_date.day, calendar.monthrange(year, month)[1])
     reference_date = date(year, month, ref_day)
-    period_start, period_end = WalletService.get_billing_period(booking.start_date, reference_date)
 
-    start_dt = datetime.combine(period_start, datetime.min.time())
-    end_dt = datetime.combine(period_end, datetime.max.time())
+    # Helper to calculate start day of a cycle
+    def get_date_for_month(base_date: date, month_offset: int) -> date:
+        m = (base_date.month + month_offset - 1) % 12 + 1
+        y = base_date.year + (base_date.month + month_offset - 1) // 12
+        last_day_of_m = calendar.monthrange(y, m)[1]
+        return date(y, m, min(base_date.day, last_day_of_m))
 
-    # Query recurring payments (rent) for this booking in this billing cycle
+    cycles = []
+    i = 0
+    while True:
+        period_start = get_date_for_month(booking.start_date, i)
+        if period_start > reference_date:
+            break
+        period_end = get_date_for_month(booking.start_date, i + 1) - timedelta(days=1)
+        cycles.append((period_start, period_end))
+        i += 1
+
+    if not cycles:
+        period_start, period_end = WalletService.get_billing_period(booking.start_date, reference_date)
+        cycles.append((period_start, period_end))
+
+    target_period_start, target_period_end = cycles[-1]
+
+    start_dt = datetime.combine(booking.start_date, datetime.min.time())
+    end_dt = datetime.combine(target_period_end, datetime.max.time())
+
+    # Query recurring payments (rent) for this booking since start_date up to the end of target cycle
     payments = db.query(WalletTransaction).filter(
         WalletTransaction.booking_id == booking.id,
         WalletTransaction.status == TransactionStatus.completed,
@@ -204,13 +221,33 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
     due_on = min(booking.start_date.day, calendar.monthrange(year, month)[1])
     calculated_due_date = date(year, month, due_on)
 
+    # Determine status based on cumulative rent paid vs cumulative rent due
+    cumulative_due = len(cycles) * float(booking.amount)
+
+    # Calculate due cycles up to today
+    due_cycles_count = sum(1 for start, end in cycles if start <= today)
+    due_up_to_today = due_cycles_count * float(booking.amount)
+
     # Determine Status with due-date awareness
-    if rent_paid >= booking.amount:
+    if rent_paid >= cumulative_due:
         status = "paid"
-    elif rent_paid > 0:
-        status = "partial"
+    elif rent_paid < due_up_to_today:
+        if rent_paid > 0:
+            status = "partial"
+        else:
+            # Check latest active cycle due date
+            latest_due_date = target_period_start
+            active_cycles = [start for start, end in cycles if start <= today]
+            if active_cycles:
+                latest_due_date = active_cycles[-1]
+            
+            if latest_due_date == today:
+                status = "due_today"
+            else:
+                status = "unpaid"
     else:
-        # No rent paid yet — check due date to distinguish upcoming vs unpaid
+        # rent_paid >= due_up_to_today but < cumulative_due
+        # This means they paid everything due up to today, and the target period is upcoming
         if calculated_due_date > today:
             status = "upcoming"
         elif calculated_due_date == today:
@@ -220,13 +257,14 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
 
     return {
         "rent_paid": rent_paid,
+        "cumulative_due": cumulative_due,
         "security_paid": security_paid,
         "maintenance_paid": maintenance_paid,
         "status": status,
         "last_payment_date": p_date,
         "last_payment_type": p_type,
-        "billing_cycle_start": period_start,
-        "billing_cycle_end": period_end,
+        "billing_cycle_start": target_period_start,
+        "billing_cycle_end": target_period_end,
     }
 
 
@@ -729,9 +767,9 @@ async def get_rent_management_data(
                 "rent_paid_this_period": rent_this_period,
                 "security_deposit": booking.security_deposit or 0,
                 "maintenance_charge": booking.maintenance_charge or 0,
-                "remaining_rent": max(0.0, float(booking.amount) - rent_this_period),
+                "remaining_rent": max(0.0, float(m_stats.get("cumulative_due", booking.amount)) - rent_this_period),
                 "deposit_paid": booking.deposit_paid,
-                "rent_paid": booking.rent_paid,
+                "rent_paid": (rent_this_period >= float(m_stats.get("cumulative_due", booking.amount))),
                 "maintenance_paid_status": booking.maintenance_paid,
                 "billing_cycle_start": billing_start,
                 "billing_cycle_end": billing_end,
@@ -831,6 +869,21 @@ async def get_tenant_transaction_history(
                     description = description.replace(f"booking {booking_uuid_str}", desc_replacement)
                 else:
                     description = description.replace(booking_uuid_str, desc_replacement)
+            # Get payment time in IST
+            from datetime import timezone, timedelta
+            ist = timezone(timedelta(hours=5, minutes=30))
+            created_at_utc = txn.created_at
+            if created_at_utc.tzinfo is None:
+                created_at_utc = created_at_utc.replace(tzinfo=timezone.utc)
+            created_at_ist = created_at_utc.astimezone(ist)
+            payment_time = created_at_ist.strftime("%d %b %Y %I:%M %p")
+
+            billing_period = None
+            if booking and txn.payment_type in ['rent', 'total', 'maintenance']:
+                from app.services.wallet_service import WalletService
+                period_start, period_end = WalletService.get_billing_period(booking.start_date, txn.created_at.date())
+                billing_period = f"{period_start.strftime('%d %b %Y')} - {period_end.strftime('%d %b %Y')}"
+
             result.append({
                 "id": str(txn.id),
                 "amount": txn.amount / 100,  # Convert paise to rupees
@@ -841,6 +894,8 @@ async def get_tenant_transaction_history(
                 "offline_notes": txn.offline_notes,
                 "offline_reference": txn.offline_reference,
                 "created_at": txn.created_at.isoformat() if txn.created_at else None,
+                "payment_time": payment_time,
+                "billing_period": billing_period,
                 "breakdown": calculate_transaction_breakdown(txn, booking_obj=booking),
             })
 
