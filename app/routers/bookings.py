@@ -214,47 +214,45 @@ async def list_bookings(
             if not customer_phone and booking.customer_snapshot:
                 customer_phone = booking.customer_snapshot.get("phone")
 
+            # Calculate security deposit and maintenance paid from transactions (lifetime)
+            from app.models.wallet import WalletTransaction, TransactionStatus
+            dep_txns = db.query(WalletTransaction).filter(
+                WalletTransaction.booking_id == booking.id,
+                WalletTransaction.status == TransactionStatus.completed,
+                WalletTransaction.payment_type.in_(['deposit', 'total'])
+            ).all()
+            total_deposit_txns_amount = 0
+            for p in dep_txns:
+                if p.payment_type == 'deposit':
+                    total_deposit_txns_amount += p.amount / 100
+                elif p.payment_type == 'total':
+                    total_deposit_txns_amount += (booking.security_deposit or 0)
+
+            maint_txns = db.query(WalletTransaction).filter(
+                WalletTransaction.booking_id == booking.id,
+                WalletTransaction.status == TransactionStatus.completed,
+                WalletTransaction.payment_type.in_(['maintenance', 'total'])
+            ).all()
+            total_maint_txns_amount = 0
+            for p in maint_txns:
+                if p.payment_type == 'maintenance':
+                    total_maint_txns_amount += p.amount / 100
+                elif p.payment_type == 'total':
+                    total_maint_txns_amount += (booking.maintenance_charge or 0)
+
+            # Allocate deposit to security deposit and maintenance charges
+            security_cap = float(booking.security_deposit or 0)
+            deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
+            leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+            maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
+
             # Calculate vacate details if vacate request is pending
             vacate_details = None
             if booking.status == "vacate_requested":
                 from app.models import Invoice
-                from app.models.wallet import WalletTransaction, TransactionStatus
 
                 deposit_amount = booking.security_deposit or 0
                 maintenance_total = booking.maintenance_charge or 0
-
-                # Query actual deposit paid from transactions (lifetime)
-                dep_txns = db.query(WalletTransaction).filter(
-                    WalletTransaction.booking_id == booking.id,
-                    WalletTransaction.status == TransactionStatus.completed,
-                    WalletTransaction.payment_type.in_(['deposit', 'total'])
-                ).all()
-                total_deposit_txns_amount = 0
-                for p in dep_txns:
-                    if p.payment_type == 'deposit':
-                        total_deposit_txns_amount += p.amount / 100
-                    elif p.payment_type == 'total':
-                        total_deposit_txns_amount += (booking.security_deposit or 0)
-
-                # Query actual maintenance paid from transactions (lifetime/current cycle)
-                maint_txns = db.query(WalletTransaction).filter(
-                    WalletTransaction.booking_id == booking.id,
-                    WalletTransaction.status == TransactionStatus.completed,
-                    WalletTransaction.payment_type.in_(['maintenance', 'total'])
-                ).all()
-                total_maint_txns_amount = 0
-                for p in maint_txns:
-                    if p.payment_type == 'maintenance':
-                        total_maint_txns_amount += p.amount / 100
-                    elif p.payment_type == 'total':
-                        total_maint_txns_amount += (booking.maintenance_charge or 0)
-
-                # Allocate deposit to security deposit and maintenance charges
-                security_cap = float(booking.security_deposit or 0)
-                deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
-                leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
-                maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
-
                 maintenance_unpaid = max(0, maintenance_total - maintenance_paid_amt)
 
                 unpaid_invoices = db.query(Invoice).filter(
@@ -289,6 +287,8 @@ async def list_bookings(
                 "deposit_paid": booking.deposit_paid or False,
                 "maintenance_paid": booking.maintenance_paid or False,
                 "maintenance_charge": booking.maintenance_charge or 0,
+                "security_paid": int(deposit_paid_amt),
+                "maintenance_paid_amount": int(maintenance_paid_amt),
                 "stay_type": booking.stay_type,
                 "duration_days": booking.duration_days,
                 "created_at": booking.created_at.isoformat() if booking.created_at else None,
@@ -367,47 +367,45 @@ async def get_booking(
     if not customer_phone and booking.customer_snapshot:
         customer_phone = booking.customer_snapshot.get("phone")
 
+    # Calculate security deposit and maintenance paid from transactions (lifetime)
+    from app.models.wallet import WalletTransaction, TransactionStatus
+    dep_txns = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['deposit', 'total'])
+    ).all()
+    total_deposit_txns_amount = 0
+    for p in dep_txns:
+        if p.payment_type == 'deposit':
+            total_deposit_txns_amount += p.amount / 100
+        elif p.payment_type == 'total':
+            total_deposit_txns_amount += (booking.security_deposit or 0)
+
+    maint_txns = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['maintenance', 'total'])
+    ).all()
+    total_maint_txns_amount = 0
+    for p in maint_txns:
+        if p.payment_type == 'maintenance':
+            total_maint_txns_amount += p.amount / 100
+        elif p.payment_type == 'total':
+            total_maint_txns_amount += (booking.maintenance_charge or 0)
+
+    # Allocate deposit to security deposit and maintenance charges
+    security_cap = float(booking.security_deposit or 0)
+    deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
+    leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+    maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
+
     # Calculate vacate details if vacate request is pending
     vacate_details = None
     if booking.status == "vacate_requested":
         from app.models import Invoice
-        from app.models.wallet import WalletTransaction, TransactionStatus
 
         deposit_amount = booking.security_deposit or 0
         maintenance_total = booking.maintenance_charge or 0
-
-        # Query actual deposit paid from transactions (lifetime)
-        dep_txns = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['deposit', 'total'])
-        ).all()
-        total_deposit_txns_amount = 0
-        for p in dep_txns:
-            if p.payment_type == 'deposit':
-                total_deposit_txns_amount += p.amount / 100
-            elif p.payment_type == 'total':
-                total_deposit_txns_amount += (booking.security_deposit or 0)
-
-        # Query actual maintenance paid from transactions (lifetime)
-        maint_txns = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['maintenance', 'total'])
-        ).all()
-        total_maint_txns_amount = 0
-        for p in maint_txns:
-            if p.payment_type == 'maintenance':
-                total_maint_txns_amount += p.amount / 100
-            elif p.payment_type == 'total':
-                total_maint_txns_amount += (booking.maintenance_charge or 0)
-
-        # Allocate deposit to security deposit and maintenance charges
-        security_cap = float(booking.security_deposit or 0)
-        deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
-        leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
-        maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
-
         maintenance_unpaid = max(0, maintenance_total - maintenance_paid_amt)
 
         unpaid_invoices = db.query(Invoice).filter(
@@ -430,6 +428,8 @@ async def get_booking(
     response.customer_name = customer_name
     response.customer_phone = customer_phone
     response.vacate_details = vacate_details
+    response.security_paid = int(deposit_paid_amt)
+    response.maintenance_paid_amount = int(maintenance_paid_amt)
     response.property = {
         "id": str(property.id),
         "title": property.title,
@@ -618,7 +618,8 @@ async def create_booking(
         customer_snapshot={
             "name": customer_name,
             "email": current_user.email,
-            "phone": customer_phone
+            "phone": customer_phone,
+            "rent_history": [{"amount": float(amount), "start_date": booking_data.start_date.isoformat()}]
         }
     )
     db.add(new_booking)

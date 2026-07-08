@@ -253,9 +253,9 @@ async def initiate_wallet_payment(
     if str(booking.customer_id) != str(current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to pay for this booking")
     
-    # Booking must be accepted before payment
-    if booking.status not in ["accepted", "requested"]:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be 'accepted' to make payment. Current: {booking.status}")
+    # Booking must be in an active/accepted status before payment
+    if booking.status not in ["accepted", "requested", "paid", "checked_in", "active", "vacate_requested"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be active or accepted to make payment. Current: {booking.status}")
     
     # Check for existing pending transaction of the same type for this booking
     # This prevents 'why this got three' confusion by blocking extra starts

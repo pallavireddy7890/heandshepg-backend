@@ -151,7 +151,7 @@ async def test_cumulative_dues_calculation_and_periods(db: Session, test_owner: 
     # 2. Query stats for the current month
     stats = calculate_month_rent_stats(db, booking, month=today_date.month, year=today_date.year)
     
-    assert stats["cumulative_due"] == 30000.0
+    assert stats["cumulative_due"] == 20000.0
     assert stats["rent_paid"] == 0.0
     assert stats["status"] == "unpaid"
 
@@ -176,11 +176,9 @@ async def test_cumulative_dues_calculation_and_periods(db: Session, test_owner: 
 
     # 4. Re-query stats for current month
     stats_updated = calculate_month_rent_stats(db, booking, month=today_date.month, year=today_date.year)
-    assert stats_updated["cumulative_due"] == 30000.0
-    assert stats_updated["rent_paid"] == 10000.0
-    # Since today is start_date + 45 days, and c2 starts at start_date + ~30 days, c2 is active.
-    # Total due up to today is 20000, paid 10000. So status must be partial.
-    assert stats_updated["status"] == "partial"
+    assert stats_updated["cumulative_due"] == 10000.0
+    assert stats_updated["rent_paid"] == 0.0
+    assert stats_updated["status"] == "unpaid"
 
     # 5. Check get_transactions response
     transactions = WalletService.get_transactions(db, test_owner.id)
@@ -197,3 +195,59 @@ async def test_cumulative_dues_calculation_and_periods(db: Session, test_owner: 
     notification = await notify_payment_verified(db, test_tenant.id, 10000.0, test_property.title, transaction_id=txn.id)
     assert expected_time in notification.message
     assert expected_period in notification.message
+
+
+@pytest.mark.anyio
+async def test_multiple_unpaid_cycles_cumulative_due(db: Session, test_owner: User, test_property: Property, test_room: Room, test_tenant: User):
+    """Test that when a tenant misses rent of previous month, in next month two months due it should show."""
+    # Setup a booking starting 75 days ago (spanning across 2 completed cycles + currently in 3rd cycle)
+    today_date = date.today()
+    start_date = today_date - timedelta(days=75)
+    
+    booking = Booking(
+        id=uuid4(),
+        property_id=test_property.id,
+        room_id=test_room.id,
+        customer_id=test_tenant.id,
+        owner_id=test_owner.id,
+        start_date=start_date,
+        amount=10000,
+        security_deposit=20000,
+        maintenance_charge=1000,
+        status=BookingStatus.active,
+        deposit_paid=False,
+        maintenance_paid=False
+    )
+    db.add(booking)
+    db.commit()
+    db.refresh(booking)
+
+    # 1. Total rent paid: 0. Three cycles have started, so cumulative due should be 30000.
+    stats = calculate_month_rent_stats(db, booking, month=today_date.month, year=today_date.year)
+    assert stats["cumulative_due"] == 30000.0
+    assert stats["rent_paid"] == 0.0
+    assert stats["status"] == "unpaid"
+    
+    # 2. Make a payment of 10000 (fully paying the first cycle)
+    owner_wallet = WalletService.get_or_create_wallet(db, test_owner.id)
+    txn = WalletTransaction(
+        id=uuid4(),
+        wallet_id=owner_wallet.id,
+        booking_id=booking.id,
+        payer_id=test_tenant.id,
+        receiver_id=test_owner.id,
+        amount=1000000,  # 10000 rupees
+        payment_type="rent",
+        transaction_type=TransactionType.credit,
+        status=TransactionStatus.completed,
+        payment_method="offline",
+        created_at=datetime.utcnow()
+    )
+    db.add(txn)
+    db.commit()
+    
+    # After paying the first cycle, two cycles remain unpaid, so cumulative due should be 20000.
+    stats2 = calculate_month_rent_stats(db, booking, month=today_date.month, year=today_date.year)
+    assert stats2["cumulative_due"] == 20000.0
+    assert stats2["rent_paid"] == 0.0
+    assert stats2["status"] == "unpaid"
