@@ -125,7 +125,6 @@ class RentManagementResponse(BaseModel):
 # ========== Helpers ==========
 
 def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: int):
-    from sqlalchemy import and_, or_
     from app.models.wallet import WalletTransaction, TransactionStatus
     from datetime import datetime, date, timedelta
     from app.services.wallet_service import WalletService
