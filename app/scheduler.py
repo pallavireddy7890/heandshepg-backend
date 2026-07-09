@@ -416,15 +416,19 @@ def cleanup_expired_bookings(
             # Load property to get custom payment_expiry_hours
             property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
             expiry_hours = property_obj.payment_expiry_hours if property_obj and property_obj.payment_expiry_hours is not None else 24
-            
-            if booking.updated_at and booking.updated_at.tzinfo is not None:
+
+            last_update = booking.updated_at or booking.created_at
+            if not last_update:
+                continue
+
+            if last_update.tzinfo is not None:
                 expiry_limit = datetime.now(timezone.utc) - timedelta(hours=expiry_hours)
+                if last_update.astimezone(timezone.utc) >= expiry_limit:
+                    continue
             else:
                 expiry_limit = datetime.utcnow() - timedelta(hours=expiry_hours)
-                
-            if booking.updated_at >= expiry_limit:
-                continue
-                
+                if last_update >= expiry_limit:
+                    continue
             booking.status = 'cancelled'
             logger.info(f"Expired accepted unpaid booking: {booking.id}")
             expired_unpaid_count += 1

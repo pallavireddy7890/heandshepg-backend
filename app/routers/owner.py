@@ -125,7 +125,6 @@ class RentManagementResponse(BaseModel):
 # ========== Helpers ==========
 
 def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: int):
-    from sqlalchemy import and_, or_
     from app.models.wallet import WalletTransaction, TransactionStatus
     from datetime import datetime, date, timedelta
     from app.services.wallet_service import WalletService
@@ -870,7 +869,7 @@ async def get_rent_management_data(
                 "unpaid_count": unpaid_count,
                 "partial_count": partial_count,
                 "upcoming_count": upcoming_count,
-                "collected_amount": sum(t.get('rent_paid_this_period', 0) for t in tenants_data),
+                "collected_amount": collected_amount,
                 "paid_deposits_count": paid_deposits_count,
                 "unpaid_deposits_count": unpaid_deposits_count,
                 "total_deposits_collected": total_deposits_collected,
