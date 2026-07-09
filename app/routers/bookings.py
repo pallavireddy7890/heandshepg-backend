@@ -3,7 +3,7 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -32,6 +32,7 @@ router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
 @router.get("/all", dependencies=[Depends(require_admin)])
 async def list_all_bookings(
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     status_filter: Optional[str] = None,
     skip: int = 0,
@@ -40,7 +41,7 @@ async def list_all_bookings(
     """List all bookings on the platform (admin only)."""
     # On-demand cleanup of expired bookings
     from app.scheduler import cleanup_expired_bookings
-    cleanup_expired_bookings()
+    cleanup_expired_bookings(db=db, background_tasks=background_tasks)
 
     from sqlalchemy.orm import joinedload
     
@@ -166,6 +167,7 @@ async def list_all_bookings(
 
 @router.get("")
 async def list_bookings(
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     status_filter: str = None,
@@ -174,7 +176,7 @@ async def list_bookings(
     """List current user's bookings (as customer or owner)."""
     # On-demand cleanup of expired bookings
     from app.scheduler import cleanup_expired_bookings
-    cleanup_expired_bookings()
+    cleanup_expired_bookings(db=db, property_id=property_id, background_tasks=background_tasks)
 
     try:
         query = db.query(Booking).filter(
@@ -324,13 +326,14 @@ async def list_bookings(
 @router.get("/{booking_id}", response_model=BookingDetailResponse)
 async def get_booking(
     booking_id: UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get booking details."""
     # On-demand cleanup of expired bookings
     from app.scheduler import cleanup_expired_bookings
-    cleanup_expired_bookings()
+    cleanup_expired_bookings(db=db, background_tasks=background_tasks)
 
     booking = db.query(Booking).filter(
         Booking.id == booking_id,
@@ -454,13 +457,14 @@ async def get_booking(
 @router.post("", response_model=BookingResponse)
 async def create_booking(
     booking_data: BookingCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new booking request."""
     # On-demand cleanup of expired bookings
     from app.scheduler import cleanup_expired_bookings
-    cleanup_expired_bookings()
+    cleanup_expired_bookings(db=db, property_id=booking_data.property_id, background_tasks=background_tasks)
 
     # Get property
     property = db.query(Property).filter(Property.id == booking_data.property_id).first()

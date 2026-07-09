@@ -7,7 +7,7 @@ from app.services.vacancy import sync_room_vacancy
 
 class BookingService:
     @staticmethod
-    def handle_payment_completion(db: Session, booking_id: UUID, payment_type: str = None) -> tuple[bool, str]:
+    def handle_payment_completion(db: Session, booking_id: UUID, payment_type: str = None, commit: bool = True) -> tuple[bool, str]:
         """Recalculate booking payment flags and update overall status."""
         from app.models.wallet import WalletTransaction, TransactionStatus
         from app.services.vacancy import sync_room_vacancy
@@ -116,5 +116,6 @@ class BookingService:
             from app.services.referral_service import ReferralService
             ReferralService.complete_referral_for_booking(db, booking.customer_id, booking.id)
             
-        db.commit()
+        if commit:
+            db.commit()
         return True, "Booking status updated successfully"

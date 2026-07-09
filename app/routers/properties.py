@@ -2,7 +2,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date, timedelta
@@ -304,6 +304,7 @@ async def get_property_rooms(
 @router.get("/{property_id}/availability")
 async def property_availability(
     property_id: UUID,
+    background_tasks: BackgroundTasks,
     start_date: date = Query(..., description="Start date for availability check"),
     end_date: date = Query(..., description="End date for availability check"),
     db: Session = Depends(get_db)
@@ -311,7 +312,7 @@ async def property_availability(
     """Get bed availability for all rooms in a property over a date range."""
     # On-demand cleanup of expired bookings
     from app.scheduler import cleanup_expired_bookings
-    cleanup_expired_bookings()
+    cleanup_expired_bookings(db=db, property_id=property_id, background_tasks=background_tasks)
 
     property_obj = db.query(Property).filter(Property.id == property_id).first()
     if not property_obj:
@@ -324,6 +325,7 @@ async def property_availability(
 async def room_availability(
     property_id: UUID,
     room_id: UUID,
+    background_tasks: BackgroundTasks,
     start_date: date = Query(..., description="Start date for availability check"),
     end_date: date = Query(..., description="End date for availability check"),
     db: Session = Depends(get_db)
@@ -331,7 +333,7 @@ async def room_availability(
     """Get bed availability for a specific room over a date range."""
     # On-demand cleanup of expired bookings
     from app.scheduler import cleanup_expired_bookings
-    cleanup_expired_bookings()
+    cleanup_expired_bookings(db=db, property_id=property_id, background_tasks=background_tasks)
 
     room = db.query(Room).filter(
         Room.id == room_id,
@@ -543,7 +545,7 @@ async def update_room(
             db.flush()
             
             # Recalculate rent_paid, deposit_paid, maintenance_paid flags and booking status
-            BookingService.handle_payment_completion(db, bk.id)
+            BookingService.handle_payment_completion(db, bk.id, commit=False)
 
     db.commit()
     db.refresh(room)
