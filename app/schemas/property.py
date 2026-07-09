@@ -97,6 +97,7 @@ class PropertyBase(BaseModel):
     monthly_rent: Optional[int] = Field(None, ge=0)
     deposit: Optional[int] = Field(None, ge=0)
     grace_period: Optional[int] = Field(0, ge=0)
+    payment_expiry_hours: Optional[int] = Field(24, ge=1)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: date
@@ -126,6 +127,7 @@ class PropertyUpdate(BaseModel):
     monthly_rent: Optional[int] = Field(None, ge=0)
     deposit: Optional[int] = Field(None, ge=0)
     grace_period: Optional[int] = Field(None, ge=0)
+    payment_expiry_hours: Optional[int] = Field(None, ge=1)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: Optional[date] = None

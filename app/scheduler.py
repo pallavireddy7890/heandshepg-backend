@@ -1,8 +1,9 @@
 """Background scheduler for rent reminders and other automated tasks."""
-from datetime import datetime, timedelta
-from typing import List
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 import logging
 import asyncio
+import uuid
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
@@ -11,7 +12,6 @@ from app.database import SessionLocal
 from app.models import Booking, Payment, User, Profile, Property, Notification, Room, RoomBed, Vacation, VacationStatus
 from app.services.wallet_service import WalletService
 from app.services.vacancy import sync_room_vacancy
-import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,32 @@ def _send_notification_sync(
     except RuntimeError:
         # No running event loop, safe to use asyncio.run
         asyncio.run(coro)
+
+
+def _send_notification_background_safe(
+    user_id,
+    title: str,
+    message: str,
+    notification_type: str = "info",
+    link: str = None,
+):
+    """Send notification asynchronously in background using a fresh database session."""
+    db = SessionLocal()
+    try:
+        _send_notification_sync(
+            db=db,
+            user_id=user_id,
+            title=title,
+            message=message,
+            notification_type=notification_type,
+            link=link
+        )
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error sending background notification: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def get_db():
@@ -340,21 +366,35 @@ def check_pending_payments():
         db.close()
 
 
-def cleanup_expired_bookings():
-    """Mark expired booking requests as cancelled and release holds."""
-    logger.info("Running expired booking cleanup...")
+def cleanup_expired_bookings(
+    db: Optional[Session] = None,
+    property_id: Optional[uuid.UUID] = None,
+    background_tasks = None
+):
+    """Mark expired booking requests as cancelled and release holds.
     
-    db = SessionLocal()
+    If db is provided, it uses the provided request-scoped session.
+    If property_id is provided, it only cleans up expired bookings for that property.
+    If background_tasks is provided, notifications are sent asynchronously in the background.
+    """
+    logger.info(f"Running expired booking cleanup (property_id: {property_id})...")
+    
+    is_external_db = db is not None
+    if not is_external_db:
+        db = SessionLocal()
+        
     try:
         # 1. Find booking requests (unaccepted) older than 48 hours
         two_days_ago = datetime.utcnow() - timedelta(hours=48)
         
-        expired_requests = db.query(Booking).filter(
-            and_(
-                Booking.status == 'requested',
-                Booking.created_at < two_days_ago
-            )
-        ).all()
+        req_query = db.query(Booking).filter(
+            Booking.status == 'requested',
+            Booking.created_at < two_days_ago
+        )
+        if property_id:
+            req_query = req_query.filter(Booking.property_id == property_id)
+            
+        expired_requests = req_query.all()
         
         for booking in expired_requests:
             booking.status = 'cancelled'
@@ -362,19 +402,36 @@ def cleanup_expired_bookings():
             if booking.room_id:
                 sync_room_vacancy(db, booking.room_id)
         
-        # 2. Find accepted bookings (unpaid) older than 24 hours
-        one_day_ago = datetime.utcnow() - timedelta(hours=24)
+        # 2. Find accepted bookings (unpaid)
+        unpaid_query = db.query(Booking).filter(
+            Booking.status == 'accepted'
+        )
+        if property_id:
+            unpaid_query = unpaid_query.filter(Booking.property_id == property_id)
+            
+        unpaid_bookings = unpaid_query.all()
         
-        unpaid_bookings = db.query(Booking).filter(
-            and_(
-                Booking.status == 'accepted',
-                Booking.updated_at < one_day_ago
-            )
-        ).all()
-        
+        expired_unpaid_count = 0
         for booking in unpaid_bookings:
+            # Load property to get custom payment_expiry_hours
+            property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+            expiry_hours = property_obj.payment_expiry_hours if property_obj and property_obj.payment_expiry_hours is not None else 24
+
+            last_update = booking.updated_at or booking.created_at
+            if not last_update:
+                continue
+
+            if last_update.tzinfo is not None:
+                expiry_limit = datetime.now(timezone.utc) - timedelta(hours=expiry_hours)
+                if last_update.astimezone(timezone.utc) >= expiry_limit:
+                    continue
+            else:
+                expiry_limit = datetime.utcnow() - timedelta(hours=expiry_hours)
+                if last_update >= expiry_limit:
+                    continue
             booking.status = 'cancelled'
             logger.info(f"Expired accepted unpaid booking: {booking.id}")
+            expired_unpaid_count += 1
             
             # Release the physical bed hold
             if booking.bed_id:
@@ -388,34 +445,60 @@ def cleanup_expired_bookings():
                 sync_room_vacancy(db, booking.room_id)
                 
             # Send notifications
-            try:
-                _send_notification_sync(
-                    db=db,
-                    user_id=booking.customer_id,
-                    title="Booking Expired",
-                    message="Your booking request was accepted but has expired due to non-payment within 24 hours.",
-                    notification_type="info",
-                    link="/bookings"
-                )
-                _send_notification_sync(
-                    db=db,
-                    user_id=booking.owner_id,
-                    title="Booking Expired (Unpaid)",
-                    message="An accepted booking request expired because the tenant did not pay within 24 hours. The bed is now available.",
-                    notification_type="info",
-                    link="/owner/bookings"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to send expiration notifications for booking {booking.id}: {e}")
+            notifications_to_send = [
+                {
+                    "user_id": booking.customer_id,
+                    "title": "Booking Expired",
+                    "message": f"Your booking request was accepted but has expired due to non-payment within {expiry_hours} hours.",
+                    "type": "info",
+                    "link": "/bookings"
+                },
+                {
+                    "user_id": booking.owner_id,
+                    "title": "Booking Expired (Unpaid)",
+                    "message": f"An accepted booking request expired because the tenant did not pay within {expiry_hours} hours. The bed is now available.",
+                    "type": "info",
+                    "link": "/owner/bookings"
+                }
+            ]
+            
+            for notif in notifications_to_send:
+                if background_tasks:
+                    background_tasks.add_task(
+                        _send_notification_background_safe,
+                        notif["user_id"],
+                        notif["title"],
+                        notif["message"],
+                        notif["type"],
+                        notif["link"]
+                    )
+                else:
+                    try:
+                        _send_notification_sync(
+                            db=db,
+                            user_id=notif["user_id"],
+                            title=notif["title"],
+                            message=notif["message"],
+                            notification_type=notif["type"],
+                            link=notif["link"]
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send expiration notification to user {notif['user_id']} for booking {booking.id}: {e}")
         
-        db.commit()
-        logger.info(f"Marked {len(expired_requests)} unaccepted requests and {len(unpaid_bookings)} unpaid bookings as cancelled due to expiration")
-        
+        if not is_external_db:
+            db.commit()
+            logger.info(f"Marked {len(expired_requests)} unaccepted requests and {expired_unpaid_count} unpaid bookings as cancelled due to expiration")
+        else:
+            db.flush()
+            
     except Exception as e:
         logger.error(f"Error in booking cleanup: {e}")
-        db.rollback()
+        if not is_external_db:
+            db.rollback()
+        raise e
     finally:
-        db.close()
+        if not is_external_db:
+            db.close()
 
 
 def complete_ended_stays():
@@ -444,6 +527,17 @@ def complete_ended_stays():
         for booking in ended_bookings:
             # Mark as completed
             booking.status = 'completed'
+            
+            # Release the bed
+            if booking.bed_id:
+                bed = db.query(RoomBed).filter(RoomBed.id == booking.bed_id).first()
+                if bed:
+                    bed.status = "available"
+                    bed.current_tenant_id = None
+            
+            # Sync room vacancy
+            if booking.room_id:
+                sync_room_vacancy(db, booking.room_id)
             
             # Get property and room info
             property_obj = db.query(Property).filter(Property.id == booking.property_id).first()

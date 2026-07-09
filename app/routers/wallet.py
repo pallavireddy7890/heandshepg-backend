@@ -253,9 +253,9 @@ async def initiate_wallet_payment(
     if str(booking.customer_id) != str(current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to pay for this booking")
     
-    # Booking must be accepted before payment
-    if booking.status not in ["accepted", "requested"]:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be 'accepted' to make payment. Current: {booking.status}")
+    # Booking must be in an active/accepted status before payment
+    if booking.status not in ["accepted", "requested", "paid", "checked_in", "active", "vacate_requested"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be active or accepted to make payment. Current: {booking.status}")
     
     # Check for existing pending transaction of the same type for this booking
     # This prevents 'why this got three' confusion by blocking extra starts
@@ -660,7 +660,7 @@ async def verify_transaction_otp(
                 if owner_profile:
                     owner_name = owner_profile.name
         
-        await notify_payment_verified(db, transaction.payer_id, transaction.amount / 100, property_title)
+        await notify_payment_verified(db, transaction.payer_id, transaction.amount / 100, property_title, transaction_id=transaction.id)
         
         # Notify admins about completed payment
         from app.utils.notifications import notify_admins_payment_completed
@@ -836,12 +836,14 @@ async def collect_offline_payment(
 
     # Validate based on payment type
     if p_type == 'rent':
-        remaining_rent = max(0.0, float(booking.amount) - rent_paid)
+        from app.routers.owner import calculate_month_rent_stats
+        stats = calculate_month_rent_stats(db, booking, date.today().month, date.today().year)
+        remaining_rent = max(0.0, float(stats["cumulative_due"]) - stats["rent_paid"])
         # If rent is already fully paid, and they don't force it, throw overlap warning
         if remaining_rent <= 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Rent is already fully paid for the current cycle ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to record an extra payment?"
+                detail=f"Rent is already fully paid for all cycles up to now ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to record an extra payment?"
             )
         if request.amount > remaining_rent + 0.01 and not request.force_payment:
             raise HTTPException(
@@ -873,8 +875,11 @@ async def collect_offline_payment(
                 detail=f"Amount exceeds remaining maintenance charge of \u20b9{remaining_maint:.2f}. (Enable 'Force Payment' to bypass)"
             )
     elif p_type == 'total':
-        total_due = float(booking.amount) + float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
-        total_paid = rent_paid + deposit_paid + maint_paid
+        from app.routers.owner import calculate_month_rent_stats
+        stats = calculate_month_rent_stats(db, booking, date.today().month, date.today().year)
+        remaining_rent = max(0.0, float(stats["cumulative_due"]) - stats["rent_paid"])
+        total_due = remaining_rent + float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
+        total_paid = deposit_paid + maint_paid
         remaining_total = max(0.0, total_due - total_paid)
         if remaining_total <= 0.01 and not request.force_payment:
             raise HTTPException(
@@ -924,7 +929,7 @@ async def collect_offline_payment(
         from app.models import Property
         prop = db.query(Property).filter(Property.id == booking.property_id).first()
         property_title = prop.title if prop else "Property"
-        await notify_payment_verified(db, booking.customer_id, request.amount, property_title)
+        await notify_payment_verified(db, booking.customer_id, request.amount, property_title, transaction_id=transaction.id)
     except Exception:
         pass
         

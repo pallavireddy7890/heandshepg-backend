@@ -228,6 +228,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS monthly_rent INTEGER",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS deposit INTEGER",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS grace_period INTEGER DEFAULT 0",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS payment_expiry_hours INTEGER DEFAULT 24",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS auto_approve BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS instant_booking BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS cancellation_policy TEXT",

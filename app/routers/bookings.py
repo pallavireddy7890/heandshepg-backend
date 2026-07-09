@@ -3,7 +3,7 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -17,7 +17,12 @@ from app.schemas import (
     BookingExtend,
 )
 from app.utils.security import get_current_user, require_role
-from app.utils.notifications import notify_booking_created, notify_booking_accepted, notify_booking_rejected
+from app.utils.notifications import (
+    notify_booking_created,
+    notify_booking_accepted,
+    notify_booking_rejected,
+    notify_booking_cancelled,
+)
 from app.services.vacancy import get_bed_vacancy, is_bed_available_for_extension, sync_room_vacancy
 
 require_admin = require_role("admin")
@@ -27,12 +32,17 @@ router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
 @router.get("/all", dependencies=[Depends(require_admin)])
 async def list_all_bookings(
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     status_filter: Optional[str] = None,
     skip: int = 0,
     limit: int = Query(default=50, le=100),
 ):
     """List all bookings on the platform (admin only)."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings(db=db, background_tasks=background_tasks)
+
     from sqlalchemy.orm import joinedload
     
     query = db.query(Booking).options(
@@ -157,12 +167,17 @@ async def list_all_bookings(
 
 @router.get("")
 async def list_bookings(
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     status_filter: str = None,
     property_id: Optional[UUID] = None,
 ):
     """List current user's bookings (as customer or owner)."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings(db=db, property_id=property_id, background_tasks=background_tasks)
+
     try:
         query = db.query(Booking).filter(
             (Booking.customer_id == current_user.id) | (Booking.owner_id == current_user.id)
@@ -201,47 +216,45 @@ async def list_bookings(
             if not customer_phone and booking.customer_snapshot:
                 customer_phone = booking.customer_snapshot.get("phone")
 
+            # Calculate security deposit and maintenance paid from transactions (lifetime)
+            from app.models.wallet import WalletTransaction, TransactionStatus
+            dep_txns = db.query(WalletTransaction).filter(
+                WalletTransaction.booking_id == booking.id,
+                WalletTransaction.status == TransactionStatus.completed,
+                WalletTransaction.payment_type.in_(['deposit', 'total'])
+            ).all()
+            total_deposit_txns_amount = 0
+            for p in dep_txns:
+                if p.payment_type == 'deposit':
+                    total_deposit_txns_amount += p.amount / 100
+                elif p.payment_type == 'total':
+                    total_deposit_txns_amount += (booking.security_deposit or 0)
+
+            maint_txns = db.query(WalletTransaction).filter(
+                WalletTransaction.booking_id == booking.id,
+                WalletTransaction.status == TransactionStatus.completed,
+                WalletTransaction.payment_type.in_(['maintenance', 'total'])
+            ).all()
+            total_maint_txns_amount = 0
+            for p in maint_txns:
+                if p.payment_type == 'maintenance':
+                    total_maint_txns_amount += p.amount / 100
+                elif p.payment_type == 'total':
+                    total_maint_txns_amount += (booking.maintenance_charge or 0)
+
+            # Allocate deposit to security deposit and maintenance charges
+            security_cap = float(booking.security_deposit or 0)
+            deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
+            leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+            maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
+
             # Calculate vacate details if vacate request is pending
             vacate_details = None
             if booking.status == "vacate_requested":
                 from app.models import Invoice
-                from app.models.wallet import WalletTransaction, TransactionStatus
 
                 deposit_amount = booking.security_deposit or 0
                 maintenance_total = booking.maintenance_charge or 0
-
-                # Query actual deposit paid from transactions (lifetime)
-                dep_txns = db.query(WalletTransaction).filter(
-                    WalletTransaction.booking_id == booking.id,
-                    WalletTransaction.status == TransactionStatus.completed,
-                    WalletTransaction.payment_type.in_(['deposit', 'total'])
-                ).all()
-                total_deposit_txns_amount = 0
-                for p in dep_txns:
-                    if p.payment_type == 'deposit':
-                        total_deposit_txns_amount += p.amount / 100
-                    elif p.payment_type == 'total':
-                        total_deposit_txns_amount += (booking.security_deposit or 0)
-
-                # Query actual maintenance paid from transactions (lifetime/current cycle)
-                maint_txns = db.query(WalletTransaction).filter(
-                    WalletTransaction.booking_id == booking.id,
-                    WalletTransaction.status == TransactionStatus.completed,
-                    WalletTransaction.payment_type.in_(['maintenance', 'total'])
-                ).all()
-                total_maint_txns_amount = 0
-                for p in maint_txns:
-                    if p.payment_type == 'maintenance':
-                        total_maint_txns_amount += p.amount / 100
-                    elif p.payment_type == 'total':
-                        total_maint_txns_amount += (booking.maintenance_charge or 0)
-
-                # Allocate deposit to security deposit and maintenance charges
-                security_cap = float(booking.security_deposit or 0)
-                deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
-                leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
-                maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
-
                 maintenance_unpaid = max(0, maintenance_total - maintenance_paid_amt)
 
                 unpaid_invoices = db.query(Invoice).filter(
@@ -276,6 +289,8 @@ async def list_bookings(
                 "deposit_paid": booking.deposit_paid or False,
                 "maintenance_paid": booking.maintenance_paid or False,
                 "maintenance_charge": booking.maintenance_charge or 0,
+                "security_paid": int(deposit_paid_amt),
+                "maintenance_paid_amount": int(maintenance_paid_amt),
                 "stay_type": booking.stay_type,
                 "duration_days": booking.duration_days,
                 "created_at": booking.created_at.isoformat() if booking.created_at else None,
@@ -285,6 +300,7 @@ async def list_bookings(
                     "locality": property_obj.locality if property_obj else None,
                     "photos": property_obj.photos if property_obj else None,
                     "grace_period": property_obj.grace_period if property_obj else 0,
+                    "payment_expiry_hours": property_obj.payment_expiry_hours if property_obj else 24,
                 } if property_obj else None,
                 "room": {
                     "room_type": room_obj.room_type,
@@ -310,10 +326,15 @@ async def list_bookings(
 @router.get("/{booking_id}", response_model=BookingDetailResponse)
 async def get_booking(
     booking_id: UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get booking details."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings(db=db, background_tasks=background_tasks)
+
     booking = db.query(Booking).filter(
         Booking.id == booking_id,
         (Booking.customer_id == current_user.id) | (Booking.owner_id == current_user.id)
@@ -349,47 +370,45 @@ async def get_booking(
     if not customer_phone and booking.customer_snapshot:
         customer_phone = booking.customer_snapshot.get("phone")
 
+    # Calculate security deposit and maintenance paid from transactions (lifetime)
+    from app.models.wallet import WalletTransaction, TransactionStatus
+    dep_txns = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['deposit', 'total'])
+    ).all()
+    total_deposit_txns_amount = 0
+    for p in dep_txns:
+        if p.payment_type == 'deposit':
+            total_deposit_txns_amount += p.amount / 100
+        elif p.payment_type == 'total':
+            total_deposit_txns_amount += (booking.security_deposit or 0)
+
+    maint_txns = db.query(WalletTransaction).filter(
+        WalletTransaction.booking_id == booking.id,
+        WalletTransaction.status == TransactionStatus.completed,
+        WalletTransaction.payment_type.in_(['maintenance', 'total'])
+    ).all()
+    total_maint_txns_amount = 0
+    for p in maint_txns:
+        if p.payment_type == 'maintenance':
+            total_maint_txns_amount += p.amount / 100
+        elif p.payment_type == 'total':
+            total_maint_txns_amount += (booking.maintenance_charge or 0)
+
+    # Allocate deposit to security deposit and maintenance charges
+    security_cap = float(booking.security_deposit or 0)
+    deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
+    leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+    maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
+
     # Calculate vacate details if vacate request is pending
     vacate_details = None
     if booking.status == "vacate_requested":
         from app.models import Invoice
-        from app.models.wallet import WalletTransaction, TransactionStatus
 
         deposit_amount = booking.security_deposit or 0
         maintenance_total = booking.maintenance_charge or 0
-
-        # Query actual deposit paid from transactions (lifetime)
-        dep_txns = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['deposit', 'total'])
-        ).all()
-        total_deposit_txns_amount = 0
-        for p in dep_txns:
-            if p.payment_type == 'deposit':
-                total_deposit_txns_amount += p.amount / 100
-            elif p.payment_type == 'total':
-                total_deposit_txns_amount += (booking.security_deposit or 0)
-
-        # Query actual maintenance paid from transactions (lifetime)
-        maint_txns = db.query(WalletTransaction).filter(
-            WalletTransaction.booking_id == booking.id,
-            WalletTransaction.status == TransactionStatus.completed,
-            WalletTransaction.payment_type.in_(['maintenance', 'total'])
-        ).all()
-        total_maint_txns_amount = 0
-        for p in maint_txns:
-            if p.payment_type == 'maintenance':
-                total_maint_txns_amount += p.amount / 100
-            elif p.payment_type == 'total':
-                total_maint_txns_amount += (booking.maintenance_charge or 0)
-
-        # Allocate deposit to security deposit and maintenance charges
-        security_cap = float(booking.security_deposit or 0)
-        deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
-        leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
-        maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
-
         maintenance_unpaid = max(0, maintenance_total - maintenance_paid_amt)
 
         unpaid_invoices = db.query(Invoice).filter(
@@ -412,12 +431,15 @@ async def get_booking(
     response.customer_name = customer_name
     response.customer_phone = customer_phone
     response.vacate_details = vacate_details
+    response.security_paid = int(deposit_paid_amt)
+    response.maintenance_paid_amount = int(maintenance_paid_amt)
     response.property = {
         "id": str(property.id),
         "title": property.title,
         "city": property.city,
         "locality": property.locality,
         "photos": property.photos,
+        "payment_expiry_hours": property.payment_expiry_hours,
     } if property else None
     response.room = {
         "id": str(room.id),
@@ -435,10 +457,15 @@ async def get_booking(
 @router.post("", response_model=BookingResponse)
 async def create_booking(
     booking_data: BookingCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new booking request."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings(db=db, property_id=booking_data.property_id, background_tasks=background_tasks)
+
     # Get property
     property = db.query(Property).filter(Property.id == booking_data.property_id).first()
     if not property:
@@ -595,7 +622,8 @@ async def create_booking(
         customer_snapshot={
             "name": customer_name,
             "email": current_user.email,
-            "phone": customer_phone
+            "phone": customer_phone,
+            "rent_history": [{"amount": float(amount), "start_date": booking_data.start_date.isoformat()}]
         }
     )
     db.add(new_booking)
@@ -709,6 +737,40 @@ async def cancel_booking(
     
     db.commit()
     db.refresh(booking)
+
+    # Notify the other party about the cancellation
+    try:
+        property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+        property_title = property_obj.title if property_obj else "Property"
+
+        if current_user.id == booking.customer_id:
+            # Tenant cancelled -> Notify Owner
+            customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+            customer_name = customer_profile.name if customer_profile else current_user.email
+            await notify_booking_cancelled(
+                db=db,
+                user_id=booking.owner_id,
+                property_title=property_title,
+                initiator_name=customer_name,
+                link="/owner/bookings?tab=cancelled",
+                cancel_reason=booking.cancel_reason
+            )
+        else:
+            # Owner cancelled -> Notify Tenant
+            owner_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+            owner_name = owner_profile.name if owner_profile else "Property Owner"
+            await notify_booking_cancelled(
+                db=db,
+                user_id=booking.customer_id,
+                property_title=property_title,
+                initiator_name=owner_name,
+                link="/bookings",
+                cancel_reason=booking.cancel_reason
+            )
+    except Exception as e:
+        import logging
+        logging.warning(f"Failed to send cancellation notification: {e}")
+
     return booking
 
 
@@ -746,12 +808,14 @@ async def request_vacate(
     db.commit()
     db.refresh(booking)
     
-    # Fetch property and customer details for notification
+    # Fetch property, room, and customer details for notification
     property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+    room_obj = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
     customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
     
     property_title = property_obj.title if property_obj else "Property"
     customer_name = customer_profile.name if customer_profile else current_user.email
+    room_details = f" (Floor {room_obj.floor_number}, Room {room_obj.room_number})" if room_obj else ""
 
     # Calculate deposit, maintenance, and unpaid invoices (deductions)
     deposit_amount = booking.security_deposit or 0
@@ -767,7 +831,7 @@ async def request_vacate(
     final_refund = deposit_amount - maintenance_charges - deductions
     
     owner_message = (
-        f"{customer_name} has requested to vacate from {property_title}.\n\n"
+        f"{customer_name} has requested to vacate from {property_title}{room_details}.\n\n"
         f"Refund & Dues Details:\n"
         f"• Deposit Amount: ₹{deposit_amount}\n"
         f"• Maintenance Charges (Unpaid): ₹{maintenance_charges}\n"
@@ -777,7 +841,7 @@ async def request_vacate(
     )
     
     tenant_message = (
-        f"Your request to vacate from {property_title} has been submitted.\n\n"
+        f"Your request to vacate from {property_title}{room_details} has been submitted.\n\n"
         f"Estimated Refund Breakdown:\n"
         f"• Deposit Amount: ₹{deposit_amount}\n"
         f"• Maintenance Charges (Unpaid): ₹{maintenance_charges}\n"
@@ -844,7 +908,48 @@ async def force_vacate(
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found or not authorized")
     
-    # Release the bed
+    today_dt = date.today()
+    # Calculate last day of the current month
+    import calendar
+    last_day_of_month = date(today_dt.year, today_dt.month, calendar.monthrange(today_dt.year, today_dt.month)[1])
+    
+    # If the vacate is for the future (end of the month is after today)
+    if last_day_of_month > today_dt:
+        booking.status = "active"
+        booking.end_date = last_day_of_month
+        
+        if booking.room_id:
+            sync_room_vacancy(db, booking.room_id)
+            
+        db.commit()
+        db.refresh(booking)
+        
+        # Notify tenant about vacate request approval for end of month
+        try:
+            from app.utils.notifications import create_notification
+            property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
+            property_title = property_obj.title if property_obj else "Property"
+            
+            await create_notification(
+                db=db,
+                user_id=booking.customer_id,
+                title="Vacate Request Approved",
+                message=f"Your request to vacate {property_title} has been approved. Your stay will end on {last_day_of_month}.",
+                notification_type="info",
+                link="/bookings",
+                send_external=True
+            )
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to send vacate approval notification: {e}")
+            
+        return {
+            "success": True, 
+            "message": f"Vacate request approved. The tenant will stay until the end of the month ({last_day_of_month}).", 
+            "status": "active"
+        }
+    
+    # Release the bed immediately
     if booking.bed_id:
         bed = db.query(RoomBed).filter(RoomBed.id == booking.bed_id).first()
         if bed:
@@ -853,8 +958,11 @@ async def force_vacate(
             
     # Update booking status
     booking.status = "vacated"
-    booking.end_date = date.today()
+    booking.end_date = today_dt
     
+    if booking.room_id:
+        sync_room_vacancy(db, booking.room_id)
+        
     db.commit()
     db.refresh(booking)
     
