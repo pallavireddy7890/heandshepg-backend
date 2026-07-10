@@ -792,15 +792,13 @@ async def collect_offline_payment(
     if request.amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be greater than zero")
 
-    from datetime import date, datetime
+    from datetime import date
     from app.models.wallet import WalletTransaction, TransactionStatus
 
     # Calculate start and end of current cycle for recurring charges (rent, maintenance)
     period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
-    start_dt = datetime.combine(period_start, datetime.min.time())
-    end_dt = datetime.combine(period_end, datetime.max.time())
 
-    # Get lifetime payments for security deposit and maintenance (deposit, total, maintenance)
+    # Get aggregated lifetime payments for security deposit and maintenance (deposit, total, maintenance)
     lifetime_payments = db.query(WalletTransaction).filter(
         WalletTransaction.booking_id == booking.id,
         WalletTransaction.status == TransactionStatus.completed,
