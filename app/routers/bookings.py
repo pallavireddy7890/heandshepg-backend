@@ -294,6 +294,8 @@ async def list_bookings(
                 "stay_type": booking.stay_type,
                 "duration_days": booking.duration_days,
                 "created_at": booking.created_at.isoformat() if booking.created_at else None,
+                "updated_at": booking.updated_at.isoformat() if booking.updated_at else None,
+                "cancelled_at": booking.cancelled_at.isoformat() if booking.cancelled_at else None,
                 "property": {
                     "title": property_obj.title if property_obj else None,
                     "city": property_obj.city if property_obj else None,
@@ -909,45 +911,6 @@ async def force_vacate(
         raise HTTPException(status_code=404, detail="Booking not found or not authorized")
     
     today_dt = date.today()
-    # Calculate last day of the current month
-    import calendar
-    last_day_of_month = date(today_dt.year, today_dt.month, calendar.monthrange(today_dt.year, today_dt.month)[1])
-    
-    # If the vacate is for the future (end of the month is after today)
-    if last_day_of_month > today_dt:
-        booking.status = "active"
-        booking.end_date = last_day_of_month
-        
-        if booking.room_id:
-            sync_room_vacancy(db, booking.room_id)
-            
-        db.commit()
-        db.refresh(booking)
-        
-        # Notify tenant about vacate request approval for end of month
-        try:
-            from app.utils.notifications import create_notification
-            property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
-            property_title = property_obj.title if property_obj else "Property"
-            
-            await create_notification(
-                db=db,
-                user_id=booking.customer_id,
-                title="Vacate Request Approved",
-                message=f"Your request to vacate {property_title} has been approved. Your stay will end on {last_day_of_month}.",
-                notification_type="info",
-                link="/bookings",
-                send_external=True
-            )
-        except Exception as e:
-            import logging
-            logging.warning(f"Failed to send vacate approval notification: {e}")
-            
-        return {
-            "success": True, 
-            "message": f"Vacate request approved. The tenant will stay until the end of the month ({last_day_of_month}).", 
-            "status": "active"
-        }
     
     # Release the bed immediately
     if booking.bed_id:

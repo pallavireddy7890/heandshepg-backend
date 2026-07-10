@@ -286,21 +286,22 @@ def calculate_month_rent_stats(db: Session, booking: Booking, month: int, year: 
         target_cycle_paid = remaining_paid
         cumulative_due_amount = target_cycle_rent
     else:
-        cumulative_due_amount = target_cycle_paid + total_unpaid_rent
+        if target_cycle[0] > today:
+            cumulative_due_amount = target_cycle_rent + total_unpaid_rent
+        else:
+            cumulative_due_amount = target_cycle_paid + total_unpaid_rent
 
     target_period_start, target_period_end = target_cycle
 
     # Determine status for this earliest unpaid cycle based on due date (start date) relative to today
     if target_period_start > today:
         status = "upcoming"
+    elif target_cycle_paid > 0.01:
+        status = "partial"
     elif target_period_start == today:
         status = "due_today"
     else:
-        # target_period_start < today
-        if target_cycle_paid > 0.01:
-            status = "partial"
-        else:
-            status = "unpaid"
+        status = "unpaid"
 
     return {
         "rent_paid": target_cycle_paid,
@@ -1428,6 +1429,7 @@ async def remove_tenant_from_room(
 
         # Cancel the booking
         booking.status = "vacated"
+        booking.end_date = date.today()
 
         # Sync vacancy using centralized service
         if booking.room_id:

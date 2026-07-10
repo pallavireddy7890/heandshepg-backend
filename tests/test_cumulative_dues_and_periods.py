@@ -251,3 +251,154 @@ async def test_multiple_unpaid_cycles_cumulative_due(db: Session, test_owner: Us
     assert stats2["cumulative_due"] == 20000.0
     assert stats2["rent_paid"] == 0.0
     assert stats2["status"] == "unpaid"
+
+
+@pytest.mark.anyio
+async def test_collect_offline_payment_deposit_and_maintenance_validation(
+    db: Session, test_owner: User, test_property: Property, test_room: Room, test_tenant: User
+):
+    from app.routers.wallet import collect_offline_payment, CollectOfflinePaymentRequest
+    from fastapi import HTTPException
+    
+    # 1. Setup a booking starting today
+    booking = Booking(
+        id=uuid4(),
+        property_id=test_property.id,
+        room_id=test_room.id,
+        customer_id=test_tenant.id,
+        owner_id=test_owner.id,
+        start_date=date.today(),
+        amount=10000,
+        security_deposit=5000,
+        maintenance_charge=2000,
+        status=BookingStatus.active,
+        deposit_paid=False,
+        maintenance_paid=False
+    )
+    db.add(booking)
+    db.commit()
+    db.refresh(booking)
+
+    # Make sure owner wallet exists
+    WalletService.get_or_create_wallet(db, test_owner.id)
+
+    # 2. Test initial deposit payment (paying 4000 out of total 7000 combined deposit)
+    req = CollectOfflinePaymentRequest(
+        booking_id=booking.id,
+        amount=4000.0,
+        payment_type="deposit",
+        payment_method="cash"
+    )
+    res = await collect_offline_payment(request=req, current_user=test_owner, db=db)
+    assert res["success"] is True
+
+    # 3. Test second payment (paying 3000, which reaches the limit of 7000)
+    req2 = CollectOfflinePaymentRequest(
+        booking_id=booking.id,
+        amount=3000.0,
+        payment_type="deposit",
+        payment_method="cash"
+    )
+    res2 = await collect_offline_payment(request=req2, current_user=test_owner, db=db)
+    assert res2["success"] is True
+
+    # 4. Test exceeding the limit (paying another 1000 should raise HTTP 409 Conflict)
+    req3 = CollectOfflinePaymentRequest(
+        booking_id=booking.id,
+        amount=1000.0,
+        payment_type="deposit",
+        payment_method="cash"
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await collect_offline_payment(request=req3, current_user=test_owner, db=db)
+    assert exc_info.value.status_code == 409
+    assert "Security deposit and maintenance charge have already been fully paid." in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_partial_rent_payment_status(
+    db: Session, test_owner: User, test_property: Property, test_room: Room, test_tenant: User
+):
+    from app.routers.owner import calculate_month_rent_stats
+    from app.services.booking_service import BookingService
+
+    # 1. Setup a booking starting today
+    booking = Booking(
+        id=uuid4(),
+        property_id=test_property.id,
+        room_id=test_room.id,
+        customer_id=test_tenant.id,
+        owner_id=test_owner.id,
+        start_date=date.today(),
+        amount=10000,
+        security_deposit=20000,
+        maintenance_charge=1000,
+        status=BookingStatus.active,
+        deposit_paid=True,
+        maintenance_paid=True
+    )
+    db.add(booking)
+    db.commit()
+    db.refresh(booking)
+
+    owner_wallet = WalletService.get_or_create_wallet(db, test_owner.id)
+
+    # Pay a partial amount (5000 / 10000) for the current cycle starting today
+    txn = WalletTransaction(
+        id=uuid4(),
+        wallet_id=owner_wallet.id,
+        booking_id=booking.id,
+        payer_id=test_tenant.id,
+        receiver_id=test_owner.id,
+        amount=500000,  # 5000 rupees
+        payment_type="rent",
+        transaction_type=TransactionType.credit,
+        status=TransactionStatus.completed,
+        payment_method="online",
+        created_at=datetime.now()
+    )
+    db.add(txn)
+    db.commit()
+
+    # Recalculate status - should be "partial" since it's paid partially
+    stats = calculate_month_rent_stats(db, booking, month=date.today().month, year=date.today().year)
+    assert stats["status"] == "partial"
+
+    # Verify that BookingService updates booking status correctly (since cycle is today, it should NOT mark rent as fully paid)
+    BookingService.handle_payment_completion(db, booking.id)
+    db.refresh(booking)
+    assert booking.rent_paid is False
+    assert booking.status == "active"
+
+    # Clean up and test advance partial payment
+    db.delete(txn)
+    db.commit()
+
+    # Pay advance rent cycle 1 in full + cycle 2 partially (15000 total)
+    txn2 = WalletTransaction(
+        id=uuid4(),
+        wallet_id=owner_wallet.id,
+        booking_id=booking.id,
+        payer_id=test_tenant.id,
+        receiver_id=test_owner.id,
+        amount=1500000,  # 15000 rupees
+        payment_type="rent",
+        transaction_type=TransactionType.credit,
+        status=TransactionStatus.completed,
+        payment_method="online",
+        created_at=datetime.now()
+    )
+    db.add(txn2)
+    db.commit()
+
+    # Current cycle is fully paid. Next cycle starts in future and has 5000 paid.
+    stats2 = calculate_month_rent_stats(db, booking, month=date.today().month, year=date.today().year)
+    assert stats2["status"] == "upcoming"
+    assert stats2["billing_cycle_start"] > date.today()
+
+    # Verify that BookingService treats future partial payment as rent_paid=True for the current month
+    BookingService.handle_payment_completion(db, booking.id)
+    db.refresh(booking)
+    assert booking.rent_paid is True
+    assert booking.status == "checked_in"
+
