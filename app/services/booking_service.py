@@ -85,7 +85,7 @@ class BookingService:
         from app.routers.owner import calculate_month_rent_stats
         stats = calculate_month_rent_stats(db, booking, today.month, today.year)
         
-        booking.rent_paid = (stats["status"] in ["paid", "upcoming"]) or (stats["status"] == "partial" and stats["billing_cycle_start"] > today)
+        booking.rent_paid = (stats["status"] in ["paid", "upcoming"])
         booking.deposit_paid = (deposit_paid_amt >= (booking.security_deposit or 0))
         booking.maintenance_paid = (maintenance_paid_amt >= (booking.maintenance_charge or 0))
             
