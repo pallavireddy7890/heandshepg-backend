@@ -16,7 +16,7 @@ class GenderPreferenceEnum(str, Enum):
 # Room Schemas
 class RoomBase(BaseModel):
     room_type: str
-    floor_number: Optional[int] = 1
+    floor_number: Optional[str] = Field("1", max_length=50)
     room_number: Optional[str] = None
     bed_count: int = Field(..., gt=0)
     price: int = Field(..., ge=0)
@@ -47,7 +47,7 @@ class RoomCreate(RoomBase):
 
 class RoomUpdate(BaseModel):
     room_type: Optional[str] = None
-    floor_number: Optional[int] = None
+    floor_number: Optional[str] = Field(None, max_length=50)
     room_number: Optional[str] = None
     bed_count: Optional[int] = Field(None, gt=0)
     price: Optional[int] = Field(None, ge=0)
@@ -97,6 +97,7 @@ class PropertyBase(BaseModel):
     monthly_rent: Optional[int] = Field(None, ge=0)
     deposit: Optional[int] = Field(None, ge=0)
     grace_period: Optional[int] = Field(0, ge=0)
+    payment_expiry_hours: Optional[int] = Field(24, ge=1)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: date
@@ -126,6 +127,7 @@ class PropertyUpdate(BaseModel):
     monthly_rent: Optional[int] = Field(None, ge=0)
     deposit: Optional[int] = Field(None, ge=0)
     grace_period: Optional[int] = Field(None, ge=0)
+    payment_expiry_hours: Optional[int] = Field(None, ge=1)
     rules: Optional[str] = None
     photos: Optional[List[str]] = None
     available_from: Optional[date] = None

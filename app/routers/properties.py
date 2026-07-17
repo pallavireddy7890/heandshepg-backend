@@ -2,7 +2,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date, timedelta
@@ -304,11 +304,16 @@ async def get_property_rooms(
 @router.get("/{property_id}/availability")
 async def property_availability(
     property_id: UUID,
+    background_tasks: BackgroundTasks,
     start_date: date = Query(..., description="Start date for availability check"),
     end_date: date = Query(..., description="End date for availability check"),
     db: Session = Depends(get_db)
 ):
     """Get bed availability for all rooms in a property over a date range."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings(db=db, property_id=property_id, background_tasks=background_tasks)
+
     property_obj = db.query(Property).filter(Property.id == property_id).first()
     if not property_obj:
         raise HTTPException(status_code=404, detail="Property not found")
@@ -320,11 +325,16 @@ async def property_availability(
 async def room_availability(
     property_id: UUID,
     room_id: UUID,
+    background_tasks: BackgroundTasks,
     start_date: date = Query(..., description="Start date for availability check"),
     end_date: date = Query(..., description="End date for availability check"),
     db: Session = Depends(get_db)
 ):
     """Get bed availability for a specific room over a date range."""
+    # On-demand cleanup of expired bookings
+    from app.scheduler import cleanup_expired_bookings
+    cleanup_expired_bookings(db=db, property_id=property_id, background_tasks=background_tasks)
+
     room = db.query(Room).filter(
         Room.id == room_id,
         Room.property_id == property_id
@@ -446,9 +456,97 @@ async def update_room(
     # these are managed exclusively by the booking system (add/remove tenant).
     update_data.pop("vacancy_count", None)
     update_data.pop("is_available", None)
+
+    # Track which financial fields changed so we can sync active bookings
+    price_changed = "price" in update_data and update_data["price"] != room.price
+    deposit_changed = "security_deposit" in update_data and update_data["security_deposit"] != room.security_deposit
+    maintenance_changed = "maintenance_charge" in update_data and update_data["maintenance_charge"] != room.maintenance_charge
+
     for field, value in update_data.items():
         setattr(room, field, value)
-    
+
+    # Sync active bookings in this room when financial fields change,
+    # so rent management and payment collection use the updated values.
+    if price_changed or deposit_changed or maintenance_changed:
+        from app.models.booking import Booking, BookingStatus
+        from app.services.booking_service import BookingService
+        active_bookings = db.query(Booking).filter(
+            Booking.room_id == room_id,
+            Booking.status.in_([
+                BookingStatus.active,
+                BookingStatus.paid,
+                BookingStatus.checked_in,
+                BookingStatus.vacate_requested,
+            ])
+        ).all()
+        for bk in active_bookings:
+            if price_changed:
+                # Update rent history in customer_snapshot for mid-month changes
+                from datetime import date
+                import calendar
+                today = date.today()
+                
+                # Helper to calculate start day of a cycle
+                def get_date_for_month(base_date: date, month_offset: int) -> date:
+                    m = (base_date.month + month_offset - 1) % 12 + 1
+                    y = base_date.year + (base_date.month + month_offset - 1) // 12
+                    last_day_of_m = calendar.monthrange(y, m)[1]
+                    return date(y, m, min(base_date.day, last_day_of_m))
+
+                # Find the earliest cycle start date >= today
+                effective_date = bk.start_date
+                if today > bk.start_date:
+                    i = 0
+                    while True:
+                        period_start = get_date_for_month(bk.start_date, i)
+                        if period_start >= today:
+                            effective_date = period_start
+                            break
+                        i += 1
+                
+                import copy
+                from sqlalchemy.orm.attributes import flag_modified
+
+                snapshot = copy.deepcopy(bk.customer_snapshot or {})
+                if not isinstance(snapshot, dict):
+                    snapshot = {}
+                
+                rent_history = snapshot.get("rent_history")
+                if not rent_history or not isinstance(rent_history, list):
+                    # Fallback initialize with the old bk.amount
+                    rent_history = [{"amount": float(bk.amount), "start_date": bk.start_date.isoformat()}]
+                
+                # Update or append
+                replaced = False
+                for entry in rent_history:
+                    if entry.get("start_date") == effective_date.isoformat():
+                        entry["amount"] = float(room.price)
+                        replaced = True
+                        break
+                
+                if not replaced:
+                    rent_history.append({
+                        "amount": float(room.price),
+                        "start_date": effective_date.isoformat()
+                    })
+                
+                rent_history.sort(key=lambda x: x.get("start_date", ""))
+                snapshot["rent_history"] = rent_history
+                bk.customer_snapshot = snapshot
+                flag_modified(bk, "customer_snapshot")
+                bk.amount = room.price
+
+            if deposit_changed and not bk.deposit_paid:
+                bk.security_deposit = room.security_deposit or 0
+            if maintenance_changed and not bk.maintenance_paid:
+                bk.maintenance_charge = room.maintenance_charge or 0
+            
+            # Flush changes to booking so handle_payment_completion sees the updated amount/deposit/charge
+            db.flush()
+            
+            # Recalculate rent_paid, deposit_paid, maintenance_paid flags and booking status
+            BookingService.handle_payment_completion(db, bk.id, commit=False)
+
     db.commit()
     db.refresh(room)
     sync_property_rent_and_deposit(db, property_id)

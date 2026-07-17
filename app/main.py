@@ -228,6 +228,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS monthly_rent INTEGER",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS deposit INTEGER",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS grace_period INTEGER DEFAULT 0",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS payment_expiry_hours INTEGER DEFAULT 24",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS auto_approve BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS instant_booking BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS cancellation_policy TEXT",
@@ -235,7 +236,13 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS safety_score INTEGER",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_amenities JSONB",
                 # === ROOMS ===
-                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS floor_number INTEGER DEFAULT 1",
+                "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS floor_number VARCHAR(50) DEFAULT '1'",
+                """DO $$ BEGIN
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'rooms' AND column_name = 'floor_number' AND data_type = 'integer') THEN
+                        ALTER TABLE rooms ALTER COLUMN floor_number TYPE VARCHAR(50) USING floor_number::text;
+                    END IF;
+                END $$""",
+                "ALTER TABLE rooms ALTER COLUMN floor_number SET DEFAULT '1'",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS room_number VARCHAR(20)",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS deposit INTEGER",
                 "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS security_deposit INTEGER",
@@ -382,22 +389,24 @@ origins = list(set(filter(None, [
     # Local
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://localhost:8080",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
-    "http://localhost:*",
+    "http://127.0.0.1:8080",
 
     # Production origins
     "https://heandshepg.com",
     "https://www.heandshepg.com",
     settings.frontend_url,
-])))
+] + settings.allowed_origins)))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
 )
 
 # =========================

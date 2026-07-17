@@ -65,7 +65,7 @@ class InitiateOfflinePaymentRequest(BaseModel):
 
 
 class CollectOfflinePaymentRequest(BaseModel):
-    booking_id: str
+    booking_id: UUID
     amount: float  # Amount in INR
     payment_type: str = "total"  # total, rent, deposit
     payment_method: str = "cash"  # cash, upi, bank_transfer, other
@@ -253,9 +253,9 @@ async def initiate_wallet_payment(
     if str(booking.customer_id) != str(current_user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to pay for this booking")
     
-    # Booking must be accepted before payment
-    if booking.status not in ["accepted", "requested"]:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be 'accepted' to make payment. Current: {booking.status}")
+    # Booking must be in an active/accepted status before payment
+    if booking.status not in ["accepted", "requested", "paid", "checked_in", "active", "vacate_requested"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be active or accepted to make payment. Current: {booking.status}")
     
     # Check for existing pending transaction of the same type for this booking
     # This prevents 'why this got three' confusion by blocking extra starts
@@ -660,7 +660,7 @@ async def verify_transaction_otp(
                 if owner_profile:
                     owner_name = owner_profile.name
         
-        await notify_payment_verified(db, transaction.payer_id, transaction.amount / 100, property_title)
+        await notify_payment_verified(db, transaction.payer_id, transaction.amount / 100, property_title, transaction_id=transaction.id)
         
         # Notify admins about completed payment
         from app.utils.notifications import notify_admins_payment_completed
@@ -792,56 +792,46 @@ async def collect_offline_payment(
     if request.amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be greater than zero")
 
-    from datetime import date, datetime
+    from datetime import date
     from app.models.wallet import WalletTransaction, TransactionStatus
 
     # Calculate start and end of current cycle for recurring charges (rent, maintenance)
     period_start, period_end = WalletService.get_billing_period(booking.start_date, date.today())
-    start_dt = datetime.combine(period_start, datetime.min.time())
-    end_dt = datetime.combine(period_end, datetime.max.time())
 
-    # Get cumulative payments for the current cycle (rent, maintenance, total)
-    cycle_payments = db.query(WalletTransaction).filter(
+    # Get aggregated lifetime payments for security deposit and maintenance (deposit, total, maintenance)
+    lifetime_payments = db.query(WalletTransaction).filter(
         WalletTransaction.booking_id == booking.id,
         WalletTransaction.status == TransactionStatus.completed,
-        WalletTransaction.payment_type.in_(['rent', 'total', 'maintenance']),
-        WalletTransaction.created_at >= start_dt,
-        WalletTransaction.created_at <= end_dt
+        WalletTransaction.payment_type.in_(['deposit', 'total', 'maintenance'])
     ).all()
 
-    rent_paid = 0
-    maint_paid = 0
-    for p in cycle_payments:
-        if p.payment_type == 'rent':
-            rent_paid += p.amount / 100
-        elif p.payment_type == 'total':
-            rent_paid += booking.amount
-            maint_paid += (booking.maintenance_charge or 0)
-        elif p.payment_type == 'maintenance':
-            maint_paid += p.amount / 100
-
-    # Get lifetime payments for security deposit (deposit, total)
-    deposit_payments = db.query(WalletTransaction).filter(
-        WalletTransaction.booking_id == booking.id,
-        WalletTransaction.status == TransactionStatus.completed,
-        WalletTransaction.payment_type.in_(['deposit', 'total'])
-    ).all()
-
-    deposit_paid = 0
-    for p in deposit_payments:
+    total_deposit_txns_amount = 0.0
+    total_maint_txns_amount = 0.0
+    for p in lifetime_payments:
         if p.payment_type == 'deposit':
-            deposit_paid += p.amount / 100
+            total_deposit_txns_amount += p.amount / 100
         elif p.payment_type == 'total':
-            deposit_paid += (booking.security_deposit or 0)
+            total_deposit_txns_amount += float(booking.security_deposit or 0)
+            total_maint_txns_amount += float(booking.maintenance_charge or 0)
+        elif p.payment_type == 'maintenance':
+            total_maint_txns_amount += p.amount / 100
+
+    # Allocate using the exact same helper logic as calculate_month_rent_stats
+    security_cap = float(booking.security_deposit or 0)
+    deposit_paid = min(total_deposit_txns_amount, security_cap)
+    leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+    maint_paid = total_maint_txns_amount + leftover_deposit
 
     # Validate based on payment type
     if p_type == 'rent':
-        remaining_rent = max(0.0, float(booking.amount) - rent_paid)
+        from app.routers.owner import calculate_month_rent_stats
+        stats = calculate_month_rent_stats(db, booking, date.today().month, date.today().year)
+        remaining_rent = max(0.0, float(stats["cumulative_due"]) - stats["rent_paid"])
         # If rent is already fully paid, and they don't force it, throw overlap warning
         if remaining_rent <= 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Rent is already fully paid for the current cycle ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to record an extra payment?"
+                detail=f"Rent is already fully paid for all cycles up to now ({period_start.strftime('%d %b')} - {period_end.strftime('%d %b')}). Do you want to record an extra payment?"
             )
         if request.amount > remaining_rent + 0.01 and not request.force_payment:
             raise HTTPException(
@@ -849,23 +839,26 @@ async def collect_offline_payment(
                 detail=f"Amount exceeds remaining rent of \u20b9{remaining_rent:.2f}. (Enable 'Force Payment' to bypass)"
             )
     elif p_type == 'deposit':
-        remaining_deposit = max(0.0, float(booking.security_deposit or 0) - deposit_paid)
+        # In the frontend, "deposit" is a combined concept including both security deposit and maintenance charge
+        total_deposit_limit = float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
+        total_deposit_paid = deposit_paid + maint_paid
+        remaining_deposit = max(0.0, total_deposit_limit - total_deposit_paid)
         if remaining_deposit <= 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Security deposit has already been fully paid."
+                detail="Security deposit and maintenance charge have already been fully paid."
             )
         if request.amount > remaining_deposit + 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Amount exceeds remaining security deposit of \u20b9{remaining_deposit:.2f}. (Enable 'Force Payment' to bypass)"
+                detail=f"Amount exceeds remaining security deposit and maintenance charge of \u20b9{remaining_deposit:.2f}. (Enable 'Force Payment' to bypass)"
             )
     elif p_type == 'maintenance':
         remaining_maint = max(0.0, float(booking.maintenance_charge or 0) - maint_paid)
         if remaining_maint <= 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Maintenance charge is already fully paid for the current cycle."
+                detail="Maintenance charge has already been fully paid."
             )
         if request.amount > remaining_maint + 0.01 and not request.force_payment:
             raise HTTPException(
@@ -873,8 +866,11 @@ async def collect_offline_payment(
                 detail=f"Amount exceeds remaining maintenance charge of \u20b9{remaining_maint:.2f}. (Enable 'Force Payment' to bypass)"
             )
     elif p_type == 'total':
-        total_due = float(booking.amount) + float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
-        total_paid = rent_paid + deposit_paid + maint_paid
+        from app.routers.owner import calculate_month_rent_stats
+        stats = calculate_month_rent_stats(db, booking, date.today().month, date.today().year)
+        remaining_rent = max(0.0, float(stats["cumulative_due"]) - stats["rent_paid"])
+        total_due = remaining_rent + float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
+        total_paid = deposit_paid + maint_paid
         remaining_total = max(0.0, total_due - total_paid)
         if remaining_total <= 0.01 and not request.force_payment:
             raise HTTPException(
@@ -893,7 +889,7 @@ async def collect_offline_payment(
     transaction = WalletService.create_offline_transaction(
         db=db,
         wallet_id=owner_wallet.id,
-        booking_id=UUID(request.booking_id),
+        booking_id=request.booking_id,
         payer_id=booking.customer_id,
         receiver_id=booking.owner_id,
         amount=amount_paise,
@@ -924,7 +920,7 @@ async def collect_offline_payment(
         from app.models import Property
         prop = db.query(Property).filter(Property.id == booking.property_id).first()
         property_title = prop.title if prop else "Property"
-        await notify_payment_verified(db, booking.customer_id, request.amount, property_title)
+        await notify_payment_verified(db, booking.customer_id, request.amount, property_title, transaction_id=transaction.id)
     except Exception:
         pass
         

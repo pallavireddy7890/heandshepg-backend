@@ -173,6 +173,29 @@ async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_
     )
 
 
+async def notify_booking_cancelled(
+    db: Session,
+    user_id: uuid.UUID,
+    property_title: str,
+    initiator_name: str,
+    link: str,
+    cancel_reason: str = None
+):
+    """Notify a user (owner or tenant) when a booking is cancelled."""
+    msg = f"Booking for {property_title} has been cancelled by {initiator_name}."
+    if cancel_reason:
+        msg += f" Reason: {cancel_reason}"
+    return await create_notification(
+        db=db,
+        user_id=user_id,
+        title="Booking Cancelled",
+        message=msg,
+        notification_type="warning",
+        link=link,
+        send_external=True
+    )
+
+
 async def notify_payment_received(
     db: Session, 
     owner_id: uuid.UUID, 
@@ -185,6 +208,31 @@ async def notify_payment_received(
     msg = f"Payment of ₹{amount:,.0f} received from {customer_name}"
     if property_title:
         msg += f" for {property_title}"
+        
+    # Find transaction to add time and billing period details
+    if transaction_id:
+        from app.models.wallet import WalletTransaction
+        from app.services.wallet_service import WalletService
+        from datetime import timezone, timedelta
+        txn = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
+        if txn:
+            # Time detail in IST
+            ist = timezone(timedelta(hours=5, minutes=30))
+            created_at_utc = txn.created_at
+            if created_at_utc.tzinfo is None:
+                created_at_utc = created_at_utc.replace(tzinfo=timezone.utc)
+            created_at_ist = created_at_utc.astimezone(ist)
+            time_str = created_at_ist.strftime("%d %b %Y %I:%M %p")
+            msg += f" at {time_str}"
+            
+            # Period detail
+            if txn.booking_id and txn.payment_type in ['rent', 'total', 'maintenance']:
+                from app.models.booking import Booking
+                booking = db.query(Booking).filter(Booking.id == txn.booking_id).first()
+                if booking:
+                    period_start, period_end = WalletService.get_billing_period(booking.start_date, txn.created_at.date())
+                    msg += f" for period {period_start.strftime('%d %b %Y')} - {period_end.strftime('%d %b %Y')}"
+                    
     msg += ". Please verify the OTP to complete the transaction."
     
     link = "/owner/wallet"
@@ -200,13 +248,46 @@ async def notify_payment_received(
         link=link
     )
 
-async def notify_payment_verified(db: Session, customer_id: uuid.UUID, amount: float, property_title: str):
+async def notify_payment_verified(
+    db: Session, 
+    customer_id: uuid.UUID, 
+    amount: float, 
+    property_title: str,
+    transaction_id: uuid.UUID = None
+):
     """Notify customer when their payment is verified."""
+    msg = f"Your payment of ₹{amount:,.0f} for {property_title} has been verified successfully."
+    
+    if transaction_id:
+        from app.models.wallet import WalletTransaction
+        from app.services.wallet_service import WalletService
+        from datetime import timezone, timedelta
+        txn = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).first()
+        if txn:
+            # Time detail in IST
+            ist = timezone(timedelta(hours=5, minutes=30))
+            created_at_utc = txn.created_at
+            if created_at_utc.tzinfo is None:
+                created_at_utc = created_at_utc.replace(tzinfo=timezone.utc)
+            created_at_ist = created_at_utc.astimezone(ist)
+            time_str = created_at_ist.strftime("%d %b %Y %I:%M %p")
+            
+            # Period detail
+            period_str = ""
+            if txn.booking_id and txn.payment_type in ['rent', 'total', 'maintenance']:
+                from app.models.booking import Booking
+                booking = db.query(Booking).filter(Booking.id == txn.booking_id).first()
+                if booking:
+                    period_start, period_end = WalletService.get_billing_period(booking.start_date, txn.created_at.date())
+                    period_str = f" for period {period_start.strftime('%d %b %Y')} - {period_end.strftime('%d %b %Y')}"
+            
+            msg = f"Your payment of ₹{amount:,.0f} for {property_title}{period_str} has been verified successfully at {time_str}."
+
     return await create_notification(
         db=db,
         user_id=customer_id,
         title="Payment Verified",
-        message=f"Your payment of ₹{amount:,.0f} for {property_title} has been verified successfully.",
+        message=msg,
         notification_type="success",
         link="/bookings"
     )
