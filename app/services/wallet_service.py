@@ -494,7 +494,7 @@ class WalletService:
                 title="Payment Verification Required",
                 message=f"Payment verification pending for ₹{amount_inr:.2f}. Please verify OTP.",
                 type="PAYMENT_VERIFICATION",
-                link="/owner/wallet",
+                link="/owner/bookings?tab=otp",
                 read=False
             )
 
