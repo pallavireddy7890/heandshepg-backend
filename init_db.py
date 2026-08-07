@@ -56,7 +56,7 @@ def init_db():
         enums = [
             ("app_role", ['customer', 'owner', 'admin']),
             ("kyc_status", ['pending', 'approved', 'rejected']),
-            ("booking_status", ['requested', 'accepted', 'paid', 'checked_in', 'active', 'completed', 'cancelled', 'vacate_requested', 'vacated']),
+            ("booking_status", ['requested', 'accepted', 'paid', 'checked_in', 'active', 'completed', 'cancelled', 'vacate_requested', 'vacate_approved', 'vacated']),
             ("payment_type", ['booking', 'monthly_rent', 'refund', 'commission']),
             ("payment_status", ['pending', 'completed', 'failed', 'refunded']),
             ("gender_preference", ['male', 'female', 'mixed']),

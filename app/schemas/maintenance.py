@@ -47,5 +47,11 @@ class TicketResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    tenant_name: Optional[str] = None
+    tenant_email: Optional[str] = None
+    property_title: Optional[str] = None
+    room_number: Optional[str] = None
+    floor: Optional[int] = None
+
     class Config:
         from_attributes = True

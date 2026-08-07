@@ -78,6 +78,10 @@ class RoomResponse(RoomBase):
     created_at: datetime
     updated_at: datetime
 
+    upcoming_vacancy: bool = False
+    upcoming_vacancy_date: Optional[date] = None
+    upcoming_vacancy_count: int = 0
+
     class Config:
         from_attributes = True
 

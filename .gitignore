@@ -45,3 +45,5 @@ htmlcov/
 Python/uploads/
 uploads/
 logs/sms_debug.log
+logs/
+*.log
