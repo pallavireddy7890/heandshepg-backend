@@ -776,7 +776,7 @@ def setup_scheduler(app):
         scheduler.add_job(
             activate_scheduled_bookings,
             #CronTrigger(minute="*"),       # For testing, run every minute
-            CronTrigger(hour=1, minute=0),
+            CronTrigger(hour=1, minute=4),
             id="activate_scheduled_bookings",
             name="Activate Scheduled Bookings",
             replace_existing=True
