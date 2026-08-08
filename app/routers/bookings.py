@@ -611,7 +611,7 @@ async def create_booking(
                     Booking.bed_id == bed.id,
                     Booking.status.in_(active_statuses),
                     Booking.start_date < booking_end,
-                    Booking.end_date > booking_start,
+                    (Booking.end_date.is_(None) | (Booking.end_date > booking_start)),
                 )
                 .first()
             )
