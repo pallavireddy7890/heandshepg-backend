@@ -51,7 +51,6 @@ class ConversationWithMessages(ConversationResponse):
 class NotificationResponse(BaseModel):
     id: UUID
     user_id: UUID
-    property_id: Optional[UUID] = None
     title: str
     message: str
     type: str

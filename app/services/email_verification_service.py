@@ -77,7 +77,6 @@ class EmailVerificationService:
                 return existing, None  # Return the existing record without sending a new email
             # Still valid but past cooldown — update with fresh OTP and reset expiry
             existing.otp_code = EmailVerificationService.generate_otp()
-
             existing.expires_at = EmailVerification.get_expiry_time()
             existing.created_at = datetime.utcnow()  # Reset cooldown timer
             existing.attempts = 0
@@ -102,7 +101,7 @@ class EmailVerificationService:
         
         # Generate OTP and hash password
         otp_code = EmailVerificationService.generate_otp()
-
+        logger.info(f"Generated OTP for {email_lower}: '{otp_code}'")
         hashed_password = get_password_hash(password)
         
         # Map role string to AppRole enum

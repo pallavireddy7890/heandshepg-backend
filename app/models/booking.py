@@ -18,7 +18,6 @@ class BookingStatus(str, enum.Enum):
     completed = "completed"
     cancelled = "cancelled"
     vacate_requested = "vacate_requested"
-    vacate_approved = "vacate_approved"
     vacated = "vacated"
     rejected = "rejected"
 
@@ -58,7 +57,7 @@ class Booking(Base):
     start_date = Column(Date, nullable=False)
     end_date = Column(Date)
     status = Column(ENUM('requested', 'accepted', 'paid', 'checked_in', 'active', 'completed', 'cancelled', 
-                         'vacate_requested', 'vacate_approved', 'vacated', 'rejected',
+                         'vacate_requested', 'vacated', 'rejected',
                          name='booking_status', create_type=False), default='requested', index=True)
     amount = Column(Integer, nullable=False)
     security_deposit = Column(Integer, nullable=False)

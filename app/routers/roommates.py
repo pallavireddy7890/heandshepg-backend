@@ -8,7 +8,7 @@ from sqlalchemy import and_, or_, desc
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Profile, RoommateProfile, RoommateMatch, RoommateMessage, BlockedUser, Notification
+from app.models import User, Profile, RoommateProfile, RoommateMatch, RoommateMessage, BlockedUser
 from app.utils.security import get_current_user
 
 router = APIRouter(prefix="/roommates", tags=["Roommate Matching"])
@@ -81,8 +81,6 @@ class RoommateMatchResponse(BaseModel):
     occupation: Optional[str] = None
     bio: Optional[str] = None
     preferences: Optional[List[str]] = None
-    budget_min: Optional[int] = None
-    budget_max: Optional[int] = None
     match_id: Optional[UUID] = None
 
     class Config:
@@ -184,37 +182,6 @@ async def get_my_roommate_profile(
     
     return response
 
-
-
-@router.get("/profile/{user_id}", response_model=RoommateProfileResponse)
-async def get_roommate_profile_by_user(
-    user_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Get any user's roommate profile."""
-
-    profile = (
-        db.query(RoommateProfile)
-        .filter(RoommateProfile.user_id == user_id)
-        .first()
-    )
-
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
-    response = RoommateProfileResponse.model_validate(profile)
-
-    user_profile = (
-        db.query(Profile)
-        .filter(Profile.user_id == user_id)
-        .first()
-    )
-
-    response.user_name = user_profile.name if user_profile else None
-    response.user_photo = user_profile.profile_photo if user_profile else None
-
-    return response
 
 @router.post("/profile", response_model=RoommateProfileResponse)
 async def create_or_update_roommate_profile(
@@ -332,8 +299,6 @@ async def get_roommate_matches(
             occupation=match_profile.occupation,
             bio=match_profile.bio,
             preferences=match_profile.preferences,
-            budget_min=match_profile.budget_min,
-            budget_max=match_profile.budget_max,
             match_id=match_id,
         ))
     
@@ -454,21 +419,6 @@ async def send_connection_request(
     db.add(match)
     db.commit()
     db.refresh(match)
-    sender_profile = db.query(Profile).filter(
-        Profile.user_id == sender_id
-    ).first()
-
-    db.add(
-        Notification(
-            user_id=target_user_id,
-            title="🤝 New Roommate Request",
-            message=f"{sender_profile.name if sender_profile else 'Someone'} wants to connect with you.",
-            type="roommate_request",
-            link="/roommates?tab=requests"
-        )
-    )
-
-    db.commit()
     return match
 
 
@@ -486,27 +436,10 @@ async def delete_connection_request(
         
     # Only allow the sender to cancel 'pending'
     if match.status == "pending" and match.user_id == current_user.id:
-
-        # Get sender profile
-        sender_profile = db.query(Profile).filter(
-            Profile.user_id == current_user.id
-        ).first()
-
-        # Delete notification
-        if sender_profile:
-            db.query(Notification).filter(
-                Notification.user_id == match.matched_user_id,
-                Notification.type == "roommate_request",
-                Notification.link == "/roommates?tab=requests",
-                Notification.message == f"{sender_profile.name} wants to connect with you."
-            ).delete(synchronize_session=False)
-
-        # Delete request
-        db.delete(match)
+        db.delete(match) # Actually delete as requested
         db.commit()
-
         return {"message": "Request deleted"}
-        
+    
     # Generic delete if authorized (e.g. either party can delete an accepted/rejected match to disconnect)
     if match.user_id == current_user.id or match.matched_user_id == current_user.id:
         db.delete(match)
@@ -561,41 +494,10 @@ async def respond_to_request(
     if response.status not in ["accepted", "rejected"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
     
-
     match.status = response.status
-
-    receiver_profile = db.query(Profile).filter(
-        Profile.user_id == current_user.id
-    ).first()
-
-    if response.status == "accepted":
-        db.add(
-            Notification(
-                user_id=match.user_id,
-                title="🎉 Request Accepted",
-                message=f"{receiver_profile.name if receiver_profile else 'User'} accepted your roommate request.",
-                type="roommate_request",
-                link="/roommates?tab=matches"
-            )
-        )
-
-    elif response.status == "rejected":
-        db.add(
-            Notification(
-                user_id=match.user_id,
-                title="Roommate Request",
-                message=f"{receiver_profile.name if receiver_profile else 'User'} declined your roommate request.",
-                type="roommate_request",
-                link="/roommates?tab=matches"
-            )
-        )
-
     db.commit()
-
-    return {
-        "message": f"Connection {response.status}",
-        "status": response.status
-    }
+    
+    return {"message": f"Connection {response.status}", "status": response.status}
 
 
 @router.get("/chats", response_model=List[ChatListResponse])

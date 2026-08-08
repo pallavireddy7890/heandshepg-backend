@@ -2,10 +2,8 @@
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
-from app.models import Booking, Room, RoomBed
+from app.models import Booking, Room
 from app.services.vacancy import sync_room_vacancy
-from datetime import date
-from fastapi import HTTPException
 
 class BookingService:
     @staticmethod
@@ -106,51 +104,11 @@ class BookingService:
             # If rent is not fully paid and status was paid, downgrade to checked_in
             if booking.status == "paid":
                 booking.status = "checked_in"
-
-        # Assign bed after successful payment/check-in
-        if (
-            not booking.bed_id and
-            booking.room_id and
-            booking.status in ["checked_in", "paid"]
-            and booking.start_date <= date.today()
-        ):
-            available_bed = (
-                db.query(RoomBed)
-                .filter(
-                    RoomBed.room_id == booking.room_id,
-                    RoomBed.status == "available"
-                )
-                .with_for_update()
-                .order_by(RoomBed.bed_number)
-                .first()
-            )
-
-            if not available_bed:
-                raise HTTPException(
-                    status_code=409,
-                    detail="No beds available in this room."
-                )
-
-            booking.bed_id = available_bed.id
-        
-        # Sync bed occupancy
-        if booking.bed_id:
-            bed = db.query(RoomBed).filter(
-                RoomBed.id == booking.bed_id
-            ).first()
-
-            if bed:
-                if( booking.status in ["paid", "checked_in", "active", "vacate_requested", "vacate_approved"] and booking.start_date <= date.today()):
-                    bed.status = "occupied"
-                    bed.current_tenant_id = booking.customer_id
-                else:
-                    bed.status = "available"
-                    bed.current_tenant_id = None
             
         # 4. SYNC VACANCY
         # This fixes the double-decrement bug by recalculating the absolute truth
         if booking.room_id:
-            sync_room_vacancy(db, booking.room_id, commit=False)
+            sync_room_vacancy(db, booking.room_id)
             
         # 5. Handle Referral Completion
         # If the booking is now "paid", and it's the customer's first booking, complete any pending referral

@@ -8,5 +8,5 @@ class BookingRepository:
         """Fetch all active bookings for a given property."""
         return db.query(Booking).filter(
             Booking.property_id == property_id,
-            Booking.status.in_(["requested", "accepted", "paid", "checked_in", "active", "vacate_requested","vacate_approved"])
+            Booking.status.in_(["requested", "accepted", "paid", "checked_in", "active", "vacate_requested"])
         ).all()

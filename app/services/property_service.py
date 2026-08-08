@@ -43,7 +43,6 @@ class PropertyService:
                         await create_notification(
                             db=db,
                             user_id=booking.customer_id,
-                            property_id=booking.property_id,
                             title="PG Account Moderated",
                             message=tenant_msg,
                             notification_type="warning",
@@ -59,7 +58,6 @@ class PropertyService:
                     await create_notification(
                         db=db,
                         user_id=property.owner_id,
-                        property_id=property.id,
                         title="Property Moderated",
                         message=owner_msg,
                         notification_type="warning",
@@ -127,7 +125,6 @@ class PropertyService:
                     await create_notification(
                         db=db,
                         user_id=booking.customer_id,
-                        property_id=booking.property_id,
                         title="PG Deletion Blocked",
                         message=tenant_msg,
                         notification_type="warning",
@@ -146,7 +143,6 @@ class PropertyService:
                     await create_notification(
                         db=db,
                         user_id=admin_id,
-                        property_id=property.id,
                         title="Property Deletion Blocked",
                         message=admin_msg,
                         notification_type="warning",

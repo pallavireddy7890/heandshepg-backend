@@ -43,12 +43,6 @@ class Notification(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    property_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("properties.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True
-    )
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     type = Column(String(50), default="info")

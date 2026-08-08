@@ -15,7 +15,6 @@ class BookingStatusEnum(str, Enum):
     completed = "completed"
     cancelled = "cancelled"
     vacate_requested = "vacate_requested"
-    vacate_approved = "vacate_approved"
     vacated = "vacated"
     rejected = "rejected"
 

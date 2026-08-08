@@ -16,7 +16,6 @@ from app.models.phone_verification_otp import PhoneVerificationOTP
 from app.models.announcement import Announcement, AnnouncementPriority
 from app.models.maintenance import Ticket, TicketPriority, TicketStatus
 from app.models.vacation import Vacation, VacationStatus
-from app.models.city_notification import CityNotification
 
 
 __all__ = [

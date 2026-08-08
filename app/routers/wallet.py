@@ -254,7 +254,7 @@ async def initiate_wallet_payment(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to pay for this booking")
     
     # Booking must be in an active/accepted status before payment
-    if booking.status not in ["accepted", "requested", "paid", "checked_in", "active", "vacate_requested", "vacate_approved"]:
+    if booking.status not in ["accepted", "requested", "paid", "checked_in", "active", "vacate_requested"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Booking status must be active or accepted to make payment. Current: {booking.status}")
     
     # Check for existing pending transaction of the same type for this booking
@@ -554,7 +554,6 @@ async def verify_razorpay_payment(
                 prop = db.query(Property).filter(Property.id == booking.property_id).first()
                 if prop:
                     property_title = prop.title
-        
         await notify_payment_received(
             db=db,
             owner_id=transaction.receiver_id,
@@ -813,13 +812,15 @@ async def collect_offline_payment(
             total_deposit_txns_amount += p.amount / 100
         elif p.payment_type == 'total':
             total_deposit_txns_amount += float(booking.security_deposit or 0)
+            total_maint_txns_amount += float(booking.maintenance_charge or 0)
         elif p.payment_type == 'maintenance':
             total_maint_txns_amount += p.amount / 100
 
     # Allocate using the exact same helper logic as calculate_month_rent_stats
     security_cap = float(booking.security_deposit or 0)
     deposit_paid = min(total_deposit_txns_amount, security_cap)
-    maint_paid = total_maint_txns_amount
+    leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
+    maint_paid = total_maint_txns_amount + leftover_deposit
 
     # Validate based on payment type
     if p_type == 'rent':
@@ -839,29 +840,42 @@ async def collect_offline_payment(
             )
     elif p_type == 'deposit':
         # In the frontend, "deposit" is a combined concept including both security deposit and maintenance charge
-        total_deposit_limit = float(booking.security_deposit or 0)
-        remaining_deposit = max(0.0, total_deposit_limit - deposit_paid)
+        total_deposit_limit = float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
+        total_deposit_paid = deposit_paid + maint_paid
+        remaining_deposit = max(0.0, total_deposit_limit - total_deposit_paid)
         if remaining_deposit <= 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Security deposit has already been fully paid."
+                detail="Security deposit and maintenance charge have already been fully paid."
             )
         if request.amount > remaining_deposit + 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Amount exceeds remaining security deposit of ₹{remaining_deposit:.2f}."
+                detail=f"Amount exceeds remaining security deposit and maintenance charge of \u20b9{remaining_deposit:.2f}. (Enable 'Force Payment' to bypass)"
+            )
+    elif p_type == 'maintenance':
+        remaining_maint = max(0.0, float(booking.maintenance_charge or 0) - maint_paid)
+        if remaining_maint <= 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Maintenance charge has already been fully paid."
+            )
+        if request.amount > remaining_maint + 0.01 and not request.force_payment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount exceeds remaining maintenance charge of \u20b9{remaining_maint:.2f}. (Enable 'Force Payment' to bypass)"
             )
     elif p_type == 'total':
         from app.routers.owner import calculate_month_rent_stats
         stats = calculate_month_rent_stats(db, booking, date.today().month, date.today().year)
         remaining_rent = max(0.0, float(stats["cumulative_due"]) - stats["rent_paid"])
-        total_due = remaining_rent + float(booking.security_deposit or 0)
-        total_paid = deposit_paid 
+        total_due = remaining_rent + float(booking.security_deposit or 0) + float(booking.maintenance_charge or 0)
+        total_paid = deposit_paid + maint_paid
         remaining_total = max(0.0, total_due - total_paid)
         if remaining_total <= 0.01 and not request.force_payment:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Rent and security deposit are already fully paid."
+                detail="All payments (rent, deposit, maintenance) are already fully paid for this cycle."
             )
         if request.amount > remaining_total + 0.01 and not request.force_payment:
             raise HTTPException(
@@ -1119,11 +1133,9 @@ async def delete_transaction(
             customer_name = customer_profile.name if customer_profile else "Customer"
             
             property_title = None
-            property_id = None
             if transaction.booking_id:
                 booking = db.query(Booking).filter(Booking.id == transaction.booking_id).first()
                 if booking:
-                    property_id = booking.property_id
                     prop = db.query(Property).filter(Property.id == booking.property_id).first()
                     if prop:
                         property_title = prop.title
@@ -1133,13 +1145,10 @@ async def delete_transaction(
             if property_title:
                 msg += f" for {property_title}"
             msg += "."
-
-            
             
             await create_notification(
                 db=db,
                 user_id=transaction.receiver_id,
-                property_id=property_id,
                 title="❌ Payment Cancelled",
                 message=msg,
                 notification_type="warning",

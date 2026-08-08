@@ -1,5 +1,5 @@
 """Users router for profile management."""
-from typing import List, Optional
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -248,22 +248,15 @@ async def update_profile(
 
 @router.get("/notifications", response_model=List[NotificationResponse])
 async def get_notifications(
-    property_id: Optional[UUID] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     unread_only: bool = False
 ):
-    
     """Get user's notifications."""
     query = db.query(Notification).filter(Notification.user_id == current_user.id)
-    if property_id:
-        query = query.filter(
-            Notification.property_id == property_id
-        )
     if unread_only:
         query = query.filter(Notification.read == False)
     notifications = query.order_by(Notification.created_at.desc()).limit(50).all()
-    
     return notifications
 
 
@@ -302,33 +295,6 @@ async def mark_all_notifications_read(
     ).update({"read": True})
     db.commit()
     return {"message": "All notifications marked as read"}
-
-
-
-@router.put("/notifications/read-by-type/{notification_type}")
-async def mark_notifications_by_type(
-    notification_type: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    notifications = (
-        db.query(Notification)
-        .filter(
-            Notification.user_id == current_user.id,
-            Notification.type == notification_type,
-            Notification.read == False,
-        )
-        .all()
-    )
-
-    for notification in notifications:
-        notification.read = True
-
-    db.commit()
-
-    return {
-        "message": f"{len(notifications)} notifications marked as read"
-    }
 
 
 # ========== File Upload ==========

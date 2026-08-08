@@ -94,15 +94,19 @@ def calculate_transaction_breakdown(txn, booking_details: Optional[dict] = None,
         if booking_details or booking_obj:
             rent_val = float(booking_details.get("amount") or 0.0) if booking_details else float(booking_obj.amount or 0.0)
             deposit_val = float(booking_details.get("security_deposit") or 0.0) if booking_details else float(booking_obj.security_deposit or 0.0)
-
+            maint_val = float(booking_details.get("maintenance_charge") or 0.0) if booking_details else float(booking_obj.maintenance_charge or 0.0)
             
             remaining = total_amt_inr
             
             # Priority 1: Security Deposit
             allocated_deposit = min(remaining, deposit_val)
             remaining -= allocated_deposit
-        
-            # Priority 2: Rent
+            
+            # Priority 2: Maintenance
+            allocated_maint = min(remaining, maint_val)
+            remaining -= allocated_maint
+            
+            # Priority 3: Rent
             allocated_rent = min(remaining, rent_val)
             remaining -= allocated_rent
             
@@ -112,7 +116,7 @@ def calculate_transaction_breakdown(txn, booking_details: Optional[dict] = None,
                 
             breakdown["rent"] = allocated_rent
             breakdown["security_deposit"] = allocated_deposit
-            breakdown["maintenance"] = 0.0
+            breakdown["maintenance"] = allocated_maint
         else:
             breakdown["rent"] = total_amt_inr
             
@@ -478,31 +482,6 @@ class WalletService:
             transaction.status = TransactionStatus.otp_sent
         
         db.commit()
-
-        # Create notification for owner
-        try:
-            from app.models import Notification,Booking
-
-            amount_inr = transaction.amount / 100 if transaction else 0
-            booking = db.query(Booking).filter(
-                Booking.id == transaction.booking_id
-            ).first()
-
-            notification = Notification(
-                user_id=transaction.receiver_id,
-                property_id=booking.property_id if booking else None,
-                title="Payment Verification Required",
-                message=f"Payment verification pending for ₹{amount_inr:.2f}. Please verify OTP.",
-                type="payment_verification",
-                link="/owner/bookings?tab=otp",
-                read=False
-            )
-
-            db.add(notification)
-            db.commit()
-
-        except Exception as e:
-            logger.warning(f"Failed to create payment verification notification: {e}")
         
         # Get amount for logging
         amount_inr = transaction.amount / 100 if transaction else 0
@@ -698,6 +677,7 @@ class WalletService:
                         "duration_days": booking.duration_days,
                         "amount": booking.amount,
                         "security_deposit": booking.security_deposit,
+                        "maintenance_charge": booking.maintenance_charge,
                         "property": {
                             "title": property_obj.title if property_obj else None,
                             "locality": property_obj.locality if property_obj else None,
@@ -730,7 +710,7 @@ class WalletService:
             payment_time = created_at_ist.strftime("%d %b %Y %I:%M %p")
 
             billing_period = None
-            if txn.booking_id and txn.payment_type in ['rent', 'total']:
+            if txn.booking_id and txn.payment_type in ['rent', 'total', 'maintenance']:
                 if txn.booking_id and booking:
                     period_start, period_end = WalletService.get_billing_period(booking.start_date, txn.created_at.date())
                     billing_period = f"{period_start.strftime('%d %b %Y')} - {period_end.strftime('%d %b %Y')}"

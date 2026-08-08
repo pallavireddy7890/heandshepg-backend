@@ -6,7 +6,6 @@ import uuid
 import logging
 import asyncio
 from app.services.notification_service import NotificationService
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +17,6 @@ async def create_notification(
     message: str,
     notification_type: str = "info",
     link: str = None,
-    property_id: uuid.UUID = None,
     reference_id: str = None,
     reference_type: str = None,
     send_external: bool = True  # Default to True to fulfill omnichannel request
@@ -30,7 +28,6 @@ async def create_notification(
     notification = Notification(
         id=uuid.uuid4(),
         user_id=user_id,
-        property_id=property_id,
         title=title,
         message=message,
         type=notification_type,
@@ -55,7 +52,6 @@ async def create_notification(
             "title": notification.title,
             "message": notification.message,
             "notification_type": notification.type,
-            "property_id": str(notification.property_id) if notification.property_id else None,
             "link": notification.link,
             "created_at": notification.created_at.isoformat() if notification.created_at else None
         }, str(user_id))
@@ -124,12 +120,11 @@ async def create_notification(
     return notification
 
 
-async def notify_vacate_request(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID, property_id: Optional[uuid.UUID] = None):
+async def notify_vacate_request(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
     """Notify owner when a tenant requests to vacate."""
     return await create_notification(
         db=db,
         user_id=owner_id,
-        property_id=property_id,
         title="🏠 Vacate Request",
         message=f"{customer_name} has requested to vacate from {property_title}. Please review and process their checkout.",
         notification_type="vacate_request",
@@ -139,12 +134,11 @@ async def notify_vacate_request(db: Session, owner_id: uuid.UUID, customer_name:
     )
 
 
-async def notify_booking_created(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID, property_id: Optional[uuid.UUID] = None):
+async def notify_booking_created(db: Session, owner_id: uuid.UUID, customer_name: str, property_title: str, booking_id: uuid.UUID):
     """Notify owner when a new booking is created."""
     return await create_notification(
         db=db,
         user_id=owner_id,
-        property_id=property_id,
         title="New Booking Request",
         message=f"{customer_name} has requested to book {property_title}",
         notification_type="booking",
@@ -152,12 +146,11 @@ async def notify_booking_created(db: Session, owner_id: uuid.UUID, customer_name
     )
 
 
-async def notify_booking_accepted(db: Session, customer_id: uuid.UUID, property_title: str, booking_id: uuid.UUID, property_id: Optional[uuid.UUID] = None):
+async def notify_booking_accepted(db: Session, customer_id: uuid.UUID, property_title: str, booking_id: uuid.UUID):
     """Notify customer when their booking is accepted."""
     return await create_notification(
         db=db,
         user_id=customer_id,
-        property_id=property_id,
         title="Booking Accepted!",
         message=f"Your booking for {property_title} has been accepted. You can now proceed with payment.",
         notification_type="success",
@@ -165,7 +158,7 @@ async def notify_booking_accepted(db: Session, customer_id: uuid.UUID, property_
     )
 
 
-async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_title: str, property_id: Optional[uuid.UUID] = None, rejection_reason: str = None):
+async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_title: str, rejection_reason: str = None):
     """Notify customer when their booking is rejected."""
     msg = f"Unfortunately, your booking for {property_title} was not approved."
     if rejection_reason:
@@ -173,7 +166,6 @@ async def notify_booking_rejected(db: Session, customer_id: uuid.UUID, property_
     return await create_notification(
         db=db,
         user_id=customer_id,
-        property_id=property_id,
         title="Booking Declined",
         message=msg,
         notification_type="warning",
@@ -187,7 +179,6 @@ async def notify_booking_cancelled(
     property_title: str,
     initiator_name: str,
     link: str,
-    property_id: Optional[uuid.UUID] = None,
     cancel_reason: str = None
 ):
     """Notify a user (owner or tenant) when a booking is cancelled."""
@@ -197,7 +188,6 @@ async def notify_booking_cancelled(
     return await create_notification(
         db=db,
         user_id=user_id,
-        property_id=property_id,
         title="Booking Cancelled",
         message=msg,
         notification_type="warning",
@@ -212,7 +202,6 @@ async def notify_payment_received(
     amount: float, 
     customer_name: str, 
     property_title: str = None,
-    property_id: Optional[uuid.UUID] = None,
     transaction_id: uuid.UUID = None
 ):
     """Notify owner when a payment is received."""
@@ -253,7 +242,6 @@ async def notify_payment_received(
     return await create_notification(
         db=db,
         user_id=owner_id,
-        property_id=property_id,
         title="💰 Payment Received",
         message=msg,
         notification_type="payment",
@@ -265,7 +253,6 @@ async def notify_payment_verified(
     customer_id: uuid.UUID, 
     amount: float, 
     property_title: str,
-    property_id: Optional[uuid.UUID] = None,
     transaction_id: uuid.UUID = None
 ):
     """Notify customer when their payment is verified."""
@@ -299,7 +286,6 @@ async def notify_payment_verified(
     return await create_notification(
         db=db,
         user_id=customer_id,
-        property_id=property_id,
         title="Payment Verified",
         message=msg,
         notification_type="success",
@@ -307,7 +293,7 @@ async def notify_payment_verified(
     )
 
 
-async def notify_new_message(db: Session, user_id: uuid.UUID, sender_name: str, property_id: Optional[uuid.UUID] = None, property_title: str = None):
+async def notify_new_message(db: Session, user_id: uuid.UUID, sender_name: str, property_title: str = None):
     """Notify user when they receive a new message."""
     message_text = f"New message from {sender_name}"
     if property_title:
@@ -316,7 +302,6 @@ async def notify_new_message(db: Session, user_id: uuid.UUID, sender_name: str, 
     return await create_notification(
         db=db,
         user_id=user_id,
-        property_id=property_id,
         title="New Message",
         message=message_text,
         notification_type="message",

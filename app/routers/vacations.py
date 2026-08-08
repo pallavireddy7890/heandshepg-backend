@@ -76,49 +76,27 @@ async def create_vacation(
     db.commit()
     db.refresh(new_vacation)
     
-   # Notify owner via WebSocket (no emails as requested)
+    # Notify owner via WebSocket (no emails as requested)
     try:
-        property_obj = db.query(Property).filter(
-            Property.id == new_vacation.property_id
-        ).first()
-
-        tenant_profile = db.query(Profile).filter(
-            Profile.user_id == current_user.id
-        ).first()
-
+        property_obj = db.query(Property).filter(Property.id == new_vacation.property_id).first()
+        tenant_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
         tenant_name = tenant_profile.name if tenant_profile else "A tenant"
-
-        room = None
-        if booking.room_id:
-            room = db.query(Room).filter(Room.id == booking.room_id).first()
-
-        room_info = (
-            f" from Room {room.room_number}, Floor {room.floor_number}"
-            if room
-            else ""
-        )
-
+        
         if property_obj:
             await create_notification(
                 db=db,
                 user_id=property_obj.owner_id,
-                property_id=property_obj.id,
                 title="🧳 New Vacation Planned",
-                message=(
-                    f"{tenant_name} is going on vacation{room_info} "
-                    f"at {property_obj.title} from "
-                    f"{new_vacation.start_date} to {new_vacation.end_date} "
-                    f"({new_vacation.total_days} days)."
-                ),
-                notification_type="vacation",
+                message=f"{tenant_name} is going on vacation from {new_vacation.start_date} to {new_vacation.end_date} ({new_vacation.total_days} days).",
+                notification_type="info",
                 link="/owner/dashboard?tab=vacations",
-                send_external=False
+                send_external=False  # No email/SMS
             )
-
     except Exception as e:
         logger.warning(f"Failed to send vacation notification: {e}")
-
+        
     return new_vacation
+
 @router.get("/my", response_model=List[VacationResponse])
 async def get_my_vacations(
     current_user: User = Depends(get_current_user),
@@ -213,7 +191,6 @@ async def update_vacation(
             await create_notification(
                 db=db,
                 user_id=property_obj.owner_id,
-                property_id=property_obj.id,
                 title="🧳 Vacation Updated",
                 message=f"{tenant_name} has updated their vacation dates: {vacation.start_date} to {vacation.end_date}.",
                 notification_type="info",
@@ -252,7 +229,6 @@ async def cancel_vacation(
             await create_notification(
                 db=db,
                 user_id=property_obj.owner_id,
-                property_id=property_obj.id,
                 title="🧳 Vacation Cancelled",
                 message=f"{tenant_name} has cancelled their vacation.",
                 notification_type="warning",
