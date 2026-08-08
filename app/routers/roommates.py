@@ -188,7 +188,7 @@ async def get_my_roommate_profile(
 
 @router.get("/profile/{user_id}", response_model=RoommateProfileResponse)
 async def get_roommate_profile_by_user(
-    user_id: str,
+    user_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

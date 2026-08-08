@@ -47,47 +47,56 @@ def sync_property_rent_and_deposit(db: Session, property_id: UUID):
 
 
 
-
-
 def add_upcoming_vacancy(db, rooms):
-    for room in rooms:
+    if not rooms:
+        return rooms
 
-        upcoming_bookings = (
-            db.query(Booking)
-            .filter(
-                Booking.room_id == room.id,
-                Booking.end_date >= date.today(),
-                or_(
-                    # Monthly bookings - only after owner approves vacate
-                    Booking.status == "vacate_approved",
+    room_ids = [room.id for room in rooms]
 
-                    # Daily bookings - automatically show future availability
-                    and_(
-                        Booking.stay_type == "daily",
-                        Booking.status.in_([
-                            "paid",
-                            "checked_in",
-                            "active",
-                        ])
-                    )
+    upcoming_bookings = (
+        db.query(Booking)
+        .filter(
+            Booking.room_id.in_(room_ids),
+            Booking.end_date >= date.today(),
+            or_(
+                # Monthly bookings - only after owner approves vacate
+                Booking.status == "vacate_approved",
+
+                # Daily bookings - automatically show future availability
+                and_(
+                    Booking.stay_type == "daily",
+                    Booking.status.in_([
+                        "paid",
+                        "checked_in",
+                        "active",
+                    ])
                 )
             )
-            .order_by(Booking.end_date.asc())
-            .all()
         )
+        .order_by(Booking.end_date.asc())
+        .all()
+    )
 
-        if upcoming_bookings:
-            first_date = upcoming_bookings[0].end_date
+    # Group bookings by room
+    bookings_by_room = {}
+
+    for booking in upcoming_bookings:
+        bookings_by_room.setdefault(booking.room_id, []).append(booking)
+
+    for room in rooms:
+        room_bookings = bookings_by_room.get(room.id, [])
+
+        if room_bookings:
+            first_date = room_bookings[0].end_date
 
             room.upcoming_vacancy = True
             room.upcoming_vacancy_date = first_date
 
             room.upcoming_vacancy_count = sum(
                 1
-                for booking in upcoming_bookings
+                for booking in room_bookings
                 if booking.end_date == first_date
             )
-
         else:
             room.upcoming_vacancy = False
             room.upcoming_vacancy_date = None

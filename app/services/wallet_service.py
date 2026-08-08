@@ -493,7 +493,7 @@ class WalletService:
                 property_id=booking.property_id if booking else None,
                 title="Payment Verification Required",
                 message=f"Payment verification pending for ₹{amount_inr:.2f}. Please verify OTP.",
-                type="PAYMENT_VERIFICATION",
+                type="payment_verification",
                 link="/owner/bookings?tab=otp",
                 read=False
             )

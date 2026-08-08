@@ -5,6 +5,7 @@ from sqlalchemy.sql import func
 from app.models import Booking, Room, RoomBed
 from app.services.vacancy import sync_room_vacancy
 from datetime import date
+from fastapi import HTTPException
 
 class BookingService:
     @staticmethod
