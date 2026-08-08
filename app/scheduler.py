@@ -9,9 +9,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from app.database import SessionLocal
-from app.models import Booking, Payment, User, Profile, Property, Notification, Room, RoomBed, Vacation, VacationStatus
+from app.models import Booking, Payment, User, Profile, Property, Notification, Room, RoomBed, Vacation, VacationStatus, BookingStatus
 from app.services.wallet_service import WalletService
 from app.services.vacancy import sync_room_vacancy
+
+
+
+from datetime import date
+
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +28,7 @@ def _send_notification_sync(
     message: str,
     notification_type: str = "info",
     link: str = None,
+    property_id: uuid.UUID = None,
 ):
     """Sync wrapper to create notification with email/SMS delivery."""
     from app.utils.notifications import create_notification
@@ -30,6 +36,7 @@ def _send_notification_sync(
     coro = create_notification(
         db=db, user_id=user_id, title=title, message=message,
         notification_type=notification_type, link=link,
+        property_id=property_id,
         send_external=True,
     )
     
@@ -48,6 +55,7 @@ def _send_notification_background_safe(
     message: str,
     notification_type: str = "info",
     link: str = None,
+    property_id: uuid.UUID = None,
 ):
     """Send notification asynchronously in background using a fresh database session."""
     db = SessionLocal()
@@ -58,7 +66,8 @@ def _send_notification_background_safe(
             title=title,
             message=message,
             notification_type=notification_type,
-            link=link
+            link=link,
+            property_id=property_id,
         )
         db.commit()
     except Exception as e:
@@ -518,15 +527,61 @@ def complete_ended_stays():
         
         # Find active bookings that have ended
         ended_bookings = db.query(Booking).filter(
-            Booking.end_date < today,
-            Booking.status.in_(['active', 'paid', 'checked_in'])
+            Booking.end_date <= today,
+            Booking.status.in_(['active', 'paid', 'checked_in','vacate_approved'])
         ).all()
         
         completed_count = 0
+
         
         for booking in ended_bookings:
             # Mark as completed
-            booking.status = 'completed'
+            property_obj = db.query(Property).filter(
+                Property.id == booking.property_id
+            ).first()
+
+            property_title = property_obj.title if property_obj else "Property"
+
+            room = (
+                db.query(Room)
+                .filter(Room.id == booking.room_id)
+                .first()
+                if booking.room_id
+                else None
+            )
+
+            room_number = room.room_number if room else "Room"
+            room_info = f" ({room.room_type})" if room else ""
+
+            tenant_profile = db.query(Profile).filter(
+                Profile.user_id == booking.customer_id
+            ).first()
+
+            tenant_name = (
+                tenant_profile.name
+                if tenant_profile and tenant_profile.name
+                else "Tenant"
+            )
+            
+            if booking.status == BookingStatus.vacate_approved:
+
+                tenant_title = "Vacate Completed"
+                tenant_message = (
+                    f"You have successfully vacated {property_title}. "
+                    "Thank you for staying with us!"
+                )
+
+                booking.status = BookingStatus.vacated
+
+            else:
+
+                tenant_title = "Stay Ended"
+                tenant_message = (
+                    f"Your stay at {property_title}{room_info} has ended. "
+                    "Thank you for staying with us!"
+                )
+
+                booking.status = BookingStatus.completed
             
             # Release the bed
             if booking.bed_id:
@@ -538,19 +593,14 @@ def complete_ended_stays():
             # Sync room vacancy
             if booking.room_id:
                 sync_room_vacancy(db, booking.room_id)
+
             
-            # Get property and room info
-            property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
-            property_title = property_obj.title if property_obj else "Property"
-            
-            room = db.query(Room).filter(Room.id == booking.room_id).first() if booking.room_id else None
-            room_info = f" ({room.room_type})" if room else ""
             
             # Notify user: Stay ended (with email + SMS)
             _send_notification_sync(
                 db=db, user_id=booking.customer_id,
-                title="Stay Ended",
-                message=f"Your stay at {property_title}{room_info} has ended. Thank you for staying with us!",
+                title=tenant_title,
+                message=tenant_message,
                 notification_type="stay_ended", link="/bookings",
             )
             
@@ -558,8 +608,9 @@ def complete_ended_stays():
             _send_notification_sync(
                 db=db, user_id=booking.owner_id,
                 title="Bed Vacated",
-                message=f"Bed vacated at {property_title}{room_info}. Vacancy has been increased.",
+                message=f"{tenant_name} has vacated Room {room_number} in {property_title}. Room {room_number} is now available for new bookings.",
                 notification_type="bed_vacated", link="/owner/dashboard",
+                property_id=booking.property_id,
             )
             
             completed_count += 1
@@ -623,6 +674,49 @@ def update_vacation_statuses():
     finally:
         db.close()
 
+def activate_scheduled_bookings():
+    db: Session = SessionLocal()
+
+    try:
+        today = date.today()
+
+        bookings = (
+            db.query(Booking)
+            .filter(
+                Booking.status == "paid",
+                Booking.start_date <= today,
+                Booking.bed_id.isnot(None)
+            )
+            .all()
+        )
+
+        for booking in bookings:
+
+            bed = (
+                db.query(RoomBed)
+                .filter(RoomBed.id == booking.bed_id)
+                .with_for_update()
+                .first()
+            )
+
+            if not bed:
+                continue
+
+            if bed.status != "occupied":
+                bed.status = "occupied"
+                bed.current_tenant_id = booking.customer_id
+
+                sync_room_vacancy(db, booking.room_id, commit=False)
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
 
 def setup_scheduler(app):
     """Set up APScheduler with background jobs."""
@@ -671,11 +765,23 @@ def setup_scheduler(app):
         # Complete ended stays daily at 1 AM
         scheduler.add_job(
             complete_ended_stays,
+            #CronTrigger(minute="*"),       # For testing, run every minute
             CronTrigger(hour=1, minute=0),
             id="complete_ended_stays",
             name="Complete Ended Stays",
             replace_existing=True
         )
+
+        # Activate future bookings
+        scheduler.add_job(
+            activate_scheduled_bookings,
+            #CronTrigger(minute="*"),       # For testing, run every minute
+            CronTrigger(hour=1, minute=4),
+            id="activate_scheduled_bookings",
+            name="Activate Scheduled Bookings",
+            replace_existing=True
+        )
+
         
         # Update vacation statuses daily at 12:05 AM
         scheduler.add_job(

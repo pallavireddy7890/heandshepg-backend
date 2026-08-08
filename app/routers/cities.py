@@ -8,7 +8,11 @@ from sqlalchemy import func
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import City, Area, Property
+from app.models import City, Area, Property, CityNotification
+from app.utils.security import get_current_user
+from app.models.user import User
+
+
 
 
 class AreaResponse(BaseModel):
@@ -104,6 +108,19 @@ async def get_cities(
     return available_cities + coming_soon_cities
 
 
+@router.get("/my-notifications")
+async def get_my_city_notifications(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    notifications = db.query(CityNotification).filter(
+        CityNotification.user_id == current_user.id,
+        CityNotification.is_notified == False
+    ).all()
+
+    return [str(n.city_id) for n in notifications]
+
+
 @router.get("/{city_id}")
 async def get_city(
     city_id: UUID,
@@ -146,4 +163,40 @@ async def get_city(
         "property_count": property_count,
         "areas": areas_list
     }
+
+
+@router.post("/{city_id}/notify")
+async def notify_city(
+    city_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    existing = db.query(CityNotification).filter(
+        CityNotification.user_id == current_user.id,
+        CityNotification.city_id == city_id
+    ).first()
+
+
+    if existing:
+        return {
+            "message":"Already subscribed"
+        }
+
+
+    notification = CityNotification(
+        user_id=current_user.id,
+        city_id=city_id
+    )
+
+
+    db.add(notification)
+    db.commit()
+
+
+    return {
+        "message":"You will be notified when city becomes available"
+    }
+
+
 

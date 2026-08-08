@@ -162,7 +162,7 @@ def get_room_availability(
     }
 
 
-def sync_room_vacancy(db: Session, room_id: UUID) -> int:
+def sync_room_vacancy(db: Session, room_id: UUID,commit: bool = True) -> int:
     """
     Recalculate and update the stored vacancy_count for a room.
     Used for long-term consistency and to fix manual update errors.
@@ -187,11 +187,14 @@ def sync_room_vacancy(db: Session, room_id: UUID) -> int:
     db.flush()
         
     # Real occupied beds are those with these persistent statuses
-    occupied_statuses = ['paid', 'checked_in', 'active', 'vacate_requested']
+    occupied_statuses = ['paid', 'checked_in', 'active', 'vacate_requested','vacate_approved']
     
+    today = date.today()
     occupied_count = db.query(Booking).filter(
         Booking.room_id == room_id,
-        Booking.status.in_(occupied_statuses)
+        Booking.bed_id.isnot(None),
+        Booking.status.in_(occupied_statuses),
+        Booking.start_date <= today
     ).count()
     
     total_beds = room.bed_count or 0
@@ -201,7 +204,10 @@ def sync_room_vacancy(db: Session, room_id: UUID) -> int:
     room.vacancy_count = new_vacancy
     room.is_available = new_vacancy > 0
     
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return new_vacancy
 
 

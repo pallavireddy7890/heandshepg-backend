@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models import User, Profile, UserRole, OwnersProfile, AuditLog, SystemSettings, AppRole, KycStatus, WalletTransaction, TransactionType, TransactionStatus, Property, Booking
 from app.utils.security import get_current_user, require_role
 from app.schemas import PropertyStatusUpdateResponse, PropertyDeletionResponse
+from app.models import Notification, CityNotification
 
 require_admin = require_role("admin")
 logger = logging.getLogger(__name__)
@@ -1330,6 +1331,8 @@ async def update_city(
             detail="City not found"
         )
     
+    old_status = city.status
+    
     # Update fields
     update_details = []
     if city_data.name is not None:
@@ -1361,6 +1364,26 @@ async def update_city(
         ip_address=request.client.host if request.client else None,
     )
     
+    # Send notification only when city becomes AVAILABLE
+    if old_status != "AVAILABLE" and city.status == "AVAILABLE":
+        subscribers = db.query(CityNotification).filter(
+            CityNotification.city_id == city.id,
+            CityNotification.is_notified == False
+        ).all()
+
+        for sub in subscribers:
+            db.add(
+                Notification(
+                    user_id=sub.user_id,
+                    title="🎉 Great News!",
+                    message=f"Great news! {city.name} is now available. Explore properties before they're booked.",
+                    type="info",
+                    link=f"/search?city={city.slug or city.name.lower()}",
+                )
+            )
+            sub.is_notified = True
+
+
     db.commit()
     db.refresh(city)
     

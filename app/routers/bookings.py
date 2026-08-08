@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, Booking, Property, Room, Profile, RoomBed
+from app.models import User, Booking, Property, Room, Profile, RoomBed, BookingStatus
 from app.schemas import (
     BookingCreate,
     BookingStatusUpdate,
@@ -125,24 +125,24 @@ async def list_all_bookings(
             total_amt = referral_amount_used + actual_paid
         else:
             # Fallback to booking expected amount if no transactions recorded
-            if booking.status in ["paid", "checked_in", "active", "completed", "vacate_requested", "vacated"]:
-                total_amt = (booking.amount or 0) + (booking.security_deposit or 0) + (booking.maintenance_charge or 0)
+            if booking.status in ["paid", "checked_in", "active", "completed", "vacate_requested", "vacate_approved","vacated"]:
+                total_amt = (booking.amount or 0) + (booking.security_deposit or 0)
             else:
                 total_amt = 0
                 if booking.rent_paid:
                     total_amt += booking.amount or 0
                 if booking.deposit_paid:
                     total_amt += booking.security_deposit or 0
-                if booking.maintenance_paid:
-                    total_amt += booking.maintenance_charge or 0
                 
-                # If no flags are set, fallback to the total expected booking value (rent + deposit + maintenance)
+                # If no flags are set, fallback to the total expected booking value (rent + deposit)
                 if not booking.rent_paid and not booking.deposit_paid and not booking.maintenance_paid:
-                    total_amt = (booking.amount or 0) + (booking.security_deposit or 0) + (booking.maintenance_charge or 0)
+                    total_amt = (booking.amount or 0) + (booking.security_deposit or 0)
             
             # For fallback, if status is paid-like, actual_paid equals total_amt
-            if booking.status in ["paid", "checked_in", "active", "completed", "vacate_requested", "vacated"]:
+            if booking.status in ["paid", "checked_in", "active", "completed", "vacate_requested","vacate_approved","vacated"]:
                 actual_paid = total_amt
+
+        
 
         result.append({
             "id": str(booking.id),
@@ -239,14 +239,11 @@ async def list_bookings(
             for p in maint_txns:
                 if p.payment_type == 'maintenance':
                     total_maint_txns_amount += p.amount / 100
-                elif p.payment_type == 'total':
-                    total_maint_txns_amount += (booking.maintenance_charge or 0)
 
             # Allocate deposit to security deposit and maintenance charges
             security_cap = float(booking.security_deposit or 0)
             deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
-            leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
-            maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
+            maintenance_paid_amt = total_maint_txns_amount
 
             # Calculate vacate details if vacate request is pending
             vacate_details = None
@@ -389,20 +386,18 @@ async def get_booking(
     maint_txns = db.query(WalletTransaction).filter(
         WalletTransaction.booking_id == booking.id,
         WalletTransaction.status == TransactionStatus.completed,
-        WalletTransaction.payment_type.in_(['maintenance', 'total'])
+        WalletTransaction.payment_type == 'maintenance'
     ).all()
     total_maint_txns_amount = 0
     for p in maint_txns:
         if p.payment_type == 'maintenance':
             total_maint_txns_amount += p.amount / 100
-        elif p.payment_type == 'total':
-            total_maint_txns_amount += (booking.maintenance_charge or 0)
+       
 
     # Allocate deposit to security deposit and maintenance charges
     security_cap = float(booking.security_deposit or 0)
     deposit_paid_amt = min(total_deposit_txns_amount, security_cap)
-    leftover_deposit = max(0.0, total_deposit_txns_amount - security_cap)
-    maintenance_paid_amt = total_maint_txns_amount + leftover_deposit
+    maintenance_paid_amt = total_maint_txns_amount
 
     # Calculate vacate details if vacate request is pending
     vacate_details = None
@@ -588,16 +583,48 @@ async def create_booking(
 
     # Pick a bed (Rule 16)
     bed_id = booking_data.bed_id
+
     if not bed_id and room:
-        # Simple auto-allocation: find first bed with status available
-        # Note: In a production system with date-based daily stays, we'd check bed-specific availability across dates.
-        # For now, we use the room-level vacancy check and just link to a physical bed.
-        available_bed = db.query(RoomBed).filter(
-            RoomBed.room_id == room.id,
-            RoomBed.status == "available"
-        ).first()
-        if available_bed:
-            bed_id = available_bed.id
+
+        beds = (
+            db.query(RoomBed)
+            .filter(RoomBed.room_id == room.id)
+            .order_by(RoomBed.bed_number)
+            .all()
+        )
+
+        active_statuses = [
+            "requested",
+            "accepted",
+            "paid",
+            "checked_in",
+            "active",
+            "vacate_requested",
+            "vacate_approved",
+        ]
+
+        for bed in beds:
+
+            overlapping_booking = (
+                db.query(Booking)
+                .filter(
+                    Booking.bed_id == bed.id,
+                    Booking.status.in_(active_statuses),
+                    Booking.start_date < booking_end,
+                    (Booking.end_date.is_(None) | (Booking.end_date > booking_start)),
+                )
+                .first()
+            )
+
+            if not overlapping_booking:
+                bed_id = bed.id
+                break
+
+        if not bed_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No beds available for the selected dates"
+            )
 
     # Get customer profile for snapshot
     customer_profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
@@ -634,7 +661,7 @@ async def create_booking(
     
     # Notify owner about new booking request
     try:
-        await notify_booking_created(db, property.owner_id, customer_name, property.title, new_booking.id)
+        await notify_booking_created(db, property.owner_id, customer_name, property.title, new_booking.id, new_booking.property_id)
     except Exception:
         pass  # Don't fail booking if notification fails
     
@@ -694,9 +721,9 @@ async def update_booking_status(
         property_title = property.title if property else "Property"
         
         if new_status == "accepted":
-            await notify_booking_accepted(db, booking.customer_id, property_title, booking.id)
+            await notify_booking_accepted(db, booking.customer_id, property_title, booking.id, booking.property_id)
         elif new_status in ["cancelled", "rejected"]:
-            await notify_booking_rejected(db, booking.customer_id, property_title, rejection_reason=booking.rejection_reason)
+            await notify_booking_rejected(db, booking.customer_id, property_title, rejection_reason=booking.rejection_reason, property_id=booking.property_id)
     except Exception:
         pass  # Don't fail status update if notification fails
     
@@ -755,7 +782,8 @@ async def cancel_booking(
                 property_title=property_title,
                 initiator_name=customer_name,
                 link="/owner/bookings?tab=cancelled",
-                cancel_reason=booking.cancel_reason
+                cancel_reason=booking.cancel_reason,
+                property_id=booking.property_id
             )
         else:
             # Owner cancelled -> Notify Tenant
@@ -767,7 +795,8 @@ async def cancel_booking(
                 property_title=property_title,
                 initiator_name=owner_name,
                 link="/bookings",
-                cancel_reason=booking.cancel_reason
+                cancel_reason=booking.cancel_reason,
+                property_id=booking.property_id
             )
     except Exception as e:
         import logging
@@ -855,11 +884,11 @@ async def request_vacate(
     # Notify owner and tenant about vacate request
     try:
         from app.utils.notifications import create_notification
-        
         # 1. Notify Owner
         await create_notification(
             db=db,
-            user_id=booking.owner_id,
+            user_id=property_obj.owner_id,
+            property_id=booking.property_id,
             title="Vacate Request",
             message=owner_message,
             notification_type="vacate_request",
@@ -872,6 +901,7 @@ async def request_vacate(
         await create_notification(
             db=db,
             user_id=booking.customer_id,
+            property_id=booking.property_id,
             title="Vacate Request Submitted",
             message=tenant_message,
             notification_type="info",
@@ -900,7 +930,9 @@ async def force_vacate(
 ):
     """
     Force vacate a tenant (Owner only).
-    Marks booking as 'vacated' and releases the bed.
+    Approve tenant vacate request.
+    Tenant continues occupying the room until booking.end_date.
+
     """
     booking = db.query(Booking).filter(
         Booking.id == booking_id,
@@ -909,22 +941,16 @@ async def force_vacate(
     
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found or not authorized")
+
+    if booking.status != BookingStatus.vacate_requested:
+        raise HTTPException(
+            status_code=400,
+            detail="Booking is not awaiting vacate approval."
+        )
     
-    today_dt = date.today()
-    
-    # Release the bed immediately
-    if booking.bed_id:
-        bed = db.query(RoomBed).filter(RoomBed.id == booking.bed_id).first()
-        if bed:
-            bed.status = "available"
-            bed.current_tenant_id = None
             
     # Update booking status
-    booking.status = "vacated"
-    booking.end_date = today_dt
-    
-    if booking.room_id:
-        sync_room_vacancy(db, booking.room_id)
+    booking.status = BookingStatus.vacate_approved
         
     db.commit()
     db.refresh(booking)
@@ -934,21 +960,45 @@ async def force_vacate(
         from app.utils.notifications import create_notification
         property_obj = db.query(Property).filter(Property.id == booking.property_id).first()
         property_title = property_obj.title if property_obj else "Property"
+
+        vacate_date = (
+                booking.end_date.strftime("%d %b %Y")
+                if booking.end_date
+                else "your booking end date"
+            )
         
         await create_notification(
             db=db,
             user_id=booking.customer_id,
-            title="Checkout Processed",
-            message=f"Your stay at {property_title} has been marked as completed (vacated) by the owner.",
-            notification_type="info",
+            property_id=booking.property_id,
+            title="Vacate Request Approved",
+            message=(
+                f"Your vacate request for {property_title} has been approved. "
+                f"You may stay until {vacate_date}."
+            ),
+            notification_type="success",
             link="/bookings",
             send_external=True
         )
     except Exception as e:
         import logging
-        logging.warning(f"Failed to send force-vacate notification: {e}")
-        
-    return {"success": True, "message": "Tenant vacated successfully", "status": "vacated"}
+        logging.warning(f"Failed to send approval notification: {e}")
+
+    remaining_days = None
+    if booking.end_date:
+        remaining_days = max(
+            0,
+            (booking.end_date - date.today()).days
+        )
+
+    return {
+        "success": True,
+        "message": "Vacate request approved.",
+        "status": "vacate_approved",
+        "vacate_date": booking.end_date.isoformat() if booking.end_date else None,
+        "days_remaining": remaining_days
+    }
+
 
 
 @router.post("/{booking_id}/decline-vacate")
@@ -986,6 +1036,7 @@ async def decline_vacate(
         await create_notification(
             db=db,
             user_id=booking.customer_id,
+            property_id=booking.property_id,
             title="Vacate Request Declined",
             message=f"Your request to vacate from {property_title} has been declined by the owner.",
             notification_type="warning",
@@ -1041,6 +1092,7 @@ async def convert_to_monthly(
         await create_notification(
             db=db,
             user_id=booking.owner_id,
+            property_id=booking.property_id,
             title="Stay Type Updated",
             message=f"{customer_name} has converted their stay at {property_title} to Monthly.",
             notification_type="info",
@@ -1122,6 +1174,7 @@ async def extend_booking(
         await create_notification(
             db=db,
             user_id=booking.owner_id,
+            property_id=booking.property_id,
             title="Booking Extended",
             message=f"{customer_name} has extended their stay at {property_title} by {extend_data.extra_days} days.",
             notification_type="info",

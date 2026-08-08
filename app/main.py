@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.database import engine, Base
 from app.database import SessionLocal
 
+
 # Import all models so Base.metadata.create_all() picks up every table
 import app.models  # noqa: F401
 
@@ -111,7 +112,7 @@ async def lifespan(app: FastAPI):
         with engine.connect() as conn:
             enums = {
                 "gender_preference": ("male", "female", "mixed"),
-                "booking_status": ("requested", "accepted", "paid", "checked_in", "active", "completed", "cancelled", "vacate_requested", "vacated", "rejected"),
+                "booking_status": ("requested", "accepted", "paid", "checked_in", "active", "completed", "cancelled", "vacate_requested", "vacate_approved", "vacated", "rejected"),
                 "payment_status": ("pending", "completed", "failed", "refunded", "pending_verification"),
                 "payment_type": ("booking", "monthly_rent", "refund", "commission"),
                 "invoice_status": ("pending", "paid", "overdue", "cancelled"),
@@ -136,6 +137,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TYPE transaction_type ADD VALUE IF NOT EXISTS 'withdrawal'",
                 "ALTER TYPE transaction_status ADD VALUE IF NOT EXISTS 'rejected'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_requested'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_approved'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacated'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'rejected'",
                 "ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'",

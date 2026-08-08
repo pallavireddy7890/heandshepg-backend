@@ -84,6 +84,7 @@ def repair_db():
                 "ALTER TYPE transaction_type ADD VALUE IF NOT EXISTS 'withdrawal'",
                 "ALTER TYPE transaction_status ADD VALUE IF NOT EXISTS 'rejected'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_requested'",
+                "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacate_approved'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'vacated'",
                 "ALTER TYPE booking_status ADD VALUE IF NOT EXISTS 'rejected'",
                 "ALTER TYPE payment_status ADD VALUE IF NOT EXISTS 'pending_verification'",

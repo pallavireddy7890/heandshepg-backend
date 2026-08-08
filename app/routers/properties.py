@@ -6,6 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date, timedelta
+from app.models import RoomBed, Booking
+from datetime import date
+from sqlalchemy import and_, or_
 
 from app.database import get_db
 from app.models import User, Property, Room, Review, Profile, SystemSettings
@@ -41,6 +44,65 @@ def sync_property_rent_and_deposit(db: Session, property_id: UUID):
             prop.monthly_rent = lead_room.price
             prop.deposit = lead_room.deposit
             db.commit()
+
+
+
+def add_upcoming_vacancy(db, rooms):
+    if not rooms:
+        return rooms
+
+    room_ids = [room.id for room in rooms]
+
+    upcoming_bookings = (
+        db.query(Booking)
+        .filter(
+            Booking.room_id.in_(room_ids),
+            Booking.end_date >= date.today(),
+            or_(
+                # Monthly bookings - only after owner approves vacate
+                Booking.status == "vacate_approved",
+
+                # Daily bookings - automatically show future availability
+                and_(
+                    Booking.stay_type == "daily",
+                    Booking.status.in_([
+                        "paid",
+                        "checked_in",
+                        "active",
+                    ])
+                )
+            )
+        )
+        .order_by(Booking.end_date.asc())
+        .all()
+    )
+
+    # Group bookings by room
+    bookings_by_room = {}
+
+    for booking in upcoming_bookings:
+        bookings_by_room.setdefault(booking.room_id, []).append(booking)
+
+    for room in rooms:
+        room_bookings = bookings_by_room.get(room.id, [])
+
+        if room_bookings:
+            first_date = room_bookings[0].end_date
+
+            room.upcoming_vacancy = True
+            room.upcoming_vacancy_date = first_date
+
+            room.upcoming_vacancy_count = sum(
+                1
+                for booking in room_bookings
+                if booking.end_date == first_date
+            )
+        else:
+            room.upcoming_vacancy = False
+            room.upcoming_vacancy_date = None
+            room.upcoming_vacancy_count = 0
+
+    return rooms
 
 
 @router.get("", response_model=List[PropertyListResponse])
@@ -87,8 +149,11 @@ async def list_properties(
         query = query.order_by(Property.created_at.desc())
     
     properties = query.offset(skip).limit(limit).all()
-    return properties
 
+    for property in properties:
+        add_upcoming_vacancy(db, property.rooms)
+
+    return properties
 
 @router.get("/search", response_model=List[PropertyListResponse])
 async def search_properties(
@@ -129,7 +194,13 @@ async def search_properties(
          Property.locality.ilike(f"%{q}%") |
          Property.rooms.any(room_filter))
     )
-    return query.limit(limit).all()
+   
+    properties = query.limit(limit).all()
+
+    for property in properties:
+        add_upcoming_vacancy(db, property.rooms)
+
+    return properties
 
 
 @router.get("/{property_id}", response_model=PropertyDetailResponse)
@@ -150,6 +221,7 @@ async def get_property(
     
     # Get rooms
     rooms = db.query(Room).filter(Room.property_id == property_id).all()
+    add_upcoming_vacancy(db, rooms)
     
     # Get owner profile
     owner_profile = db.query(Profile).filter(Profile.user_id == property.owner_id).first()
@@ -350,6 +422,38 @@ async def room_availability(
     return availability
 
 
+
+
+def create_room_beds(db, room):
+    """
+    Create bed records for a room based on bed_count.
+    Example:
+    Room 101, bed_count=2
+    =>
+    101-A
+    101-B
+    """
+    # Duplicate protection
+    existing_bed = db.query(RoomBed).filter(
+        RoomBed.room_id == room.id
+    ).first()
+
+    if existing_bed:
+        return
+    beds = []
+
+    for i in range(room.bed_count):
+        bed = RoomBed(
+            room_id=room.id,
+            bed_number=f"{room.room_number}-{chr(65 + i)}",
+            status="available"
+        )
+        beds.append(bed)
+
+    db.add_all(beds)
+    db.flush()      # IDs generate avuthayi, commit caller chestundi
+
+
 @router.post("/{property_id}/rooms", response_model=RoomResponse, dependencies=[Depends(require_owner)])
 async def create_room(
     property_id: UUID,
@@ -375,6 +479,8 @@ async def create_room(
         **room_data.model_dump()
     )
     db.add(new_room)
+    db.flush()  # To get the room ID for bed creation
+    create_room_beds(db, new_room)
     db.commit()
     db.refresh(new_room)
     sync_property_rent_and_deposit(db, property_id)
@@ -408,6 +514,9 @@ async def create_rooms_bulk(
             **room_data.model_dump()
         )
         db.add(new_room)
+        db.flush()
+
+        create_room_beds(db, new_room)
         new_rooms.append(new_room)
         
     db.commit()
@@ -477,6 +586,7 @@ async def update_room(
                 BookingStatus.paid,
                 BookingStatus.checked_in,
                 BookingStatus.vacate_requested,
+                BookingStatus.vacate_approved
             ])
         ).all()
         for bk in active_bookings:
